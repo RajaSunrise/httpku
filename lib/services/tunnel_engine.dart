@@ -164,7 +164,7 @@ class TunnelEngine extends ChangeNotifier {
       }
 
       final client = SSHClient(
-        socket,
+        SSHSocket(socket),
         username: _config.remoteUsername.isEmpty ? 'root' : _config.remoteUsername,
         onPasswordRequest: () => _config.remotePassword,
       );

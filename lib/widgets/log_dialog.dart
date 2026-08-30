@@ -20,7 +20,7 @@ class LogDialog extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         constraints: const BoxConstraints(maxHeight: 480, maxWidth: 400),
         child: Column(
-          crossAxisAlignment: CrossAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
               'Log',

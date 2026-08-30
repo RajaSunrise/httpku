@@ -46,7 +46,7 @@ class _PayloadDialogState extends State<PayloadDialog> {
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
               controller: _urlController,
