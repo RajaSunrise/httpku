@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import '../models/tunnel_config.dart';
@@ -164,7 +162,7 @@ class TunnelEngine extends ChangeNotifier {
       }
 
       final client = SSHClient(
-        SSHSocket(socket),
+        SSHClientSocket(socket),
         username: _config.remoteUsername.isEmpty ? 'root' : _config.remoteUsername,
         onPasswordRequest: () => _config.remotePassword,
       );
@@ -190,5 +188,35 @@ class TunnelEngine extends ChangeNotifier {
     _status = TunnelStatus.disconnected;
     addLog('VPN disconnected.');
     notifyListeners();
+  }
+}
+
+class SSHClientSocket implements SSHSocket {
+  final Socket _socket;
+
+  SSHClientSocket(this._socket);
+
+  @override
+  Stream<Uint8List> get stream => _socket;
+
+  @override
+  StreamSink<List<int>> get sink => _socket;
+
+  @override
+  Future<void> close() async {
+    await _socket.close();
+  }
+
+  @override
+  Future<void> get done => _socket.done;
+
+  @override
+  void destroy() {
+    _socket.destroy();
+  }
+
+  @override
+  Future<void> flush() async {
+    await _socket.flush();
   }
 }
