@@ -1,5 +1,5 @@
-name: sslh_sshl
-description: "SSLH/SSHL Tunneling Application in Flutter"
+name: httpku
+description: "HttpKu Tunneling Application in Flutter"
 publish_to: 'none'
 
 version: 1.0.0+1

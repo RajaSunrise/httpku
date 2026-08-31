@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sslh_sshl/models/tunnel_config.dart';
+import 'package:httpku/models/tunnel_config.dart';
 
 void main() {
   group('TunnelConfig Tests', () {

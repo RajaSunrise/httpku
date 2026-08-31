@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sslh_sshl/services/payload_generator.dart';
+import 'package:httpku/services/payload_generator.dart';
 
 void main() {
   group('PayloadGenerator Tests', () {
