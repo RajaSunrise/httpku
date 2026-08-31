@@ -113,9 +113,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               child: const Center(
                 child: Text(
-                  'SSLH',
+                  'HttpKu',
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 10,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -127,7 +127,7 @@ class _HomeScreenState extends State<HomeScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: const [
                 Text(
-                  'SSLH/SSHL',
+                  'HttpKu',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,

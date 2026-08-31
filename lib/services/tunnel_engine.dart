@@ -123,7 +123,7 @@ class TunnelEngine extends ChangeNotifier {
       addLog('Authenticated.', isHighlight: true);
       addLog('ping latency: 58 ms');
       addLog('Using available port: 7900');
-      addLog('disallowed apps: [SSLH/SSHL]');
+      addLog('disallowed apps: [HttpKu]');
       addLog('starting VPN...');
       addLog('DNS 1: 1.1.1.1');
       addLog('DNS 2: 1.0.0.1');
@@ -141,36 +141,78 @@ class TunnelEngine extends ChangeNotifier {
   }
 
   Future<void> _connectSSH() async {
-    final host = _config.type == TunnelType.http || _config.type == TunnelType.ssl
+    final host = (_config.type == TunnelType.http || _config.type == TunnelType.ssl)
         ? (_config.httpAddr.isNotEmpty ? _config.httpAddr : _config.remoteAddr)
         : _config.remoteAddr;
     final port = _config.type == TunnelType.http ? _config.httpPort : _config.remotePort;
 
-    // Connect raw socket
     try {
-      final socket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
+      Socket rawSocket;
+      if (_config.type == TunnelType.ssl) {
+        rawSocket = await SecureSocket.connect(
+          host,
+          port,
+          timeout: const Duration(seconds: 5),
+          onBadCertificate: (_) => true,
+        );
+      } else {
+        rawSocket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
+      }
 
-      if (_config.customPayload && _config.payload.isNotEmpty) {
+      if (_config.type == TunnelType.http && _config.customPayload && _config.payload.isNotEmpty) {
         final parsedPayload = PayloadGenerator.parsePayload(
           _config.payload,
           host: _config.remoteAddr,
           port: _config.remotePort,
           statusLine: _config.customHttpResponse,
         );
-        socket.write(parsedPayload);
-        await socket.flush();
+        addLog('Sending payload:\n$parsedPayload');
+        rawSocket.write(parsedPayload);
+        await rawSocket.flush();
       }
 
       final client = SSHClient(
-        SSHClientSocket(socket),
+        SSHClientSocket(rawSocket),
         username: _config.remoteUsername.isEmpty ? 'root' : _config.remoteUsername,
         onPasswordRequest: () => _config.remotePassword,
       );
 
       _sshClient = client;
-    } catch (_) {
-      // Fallback for simulation/testing mode if real SSH host is unavailable
-      addLog('SSH Direct connection initialized.');
+      try {
+        await client.authenticated.timeout(const Duration(seconds: 5));
+      } catch (authError) {
+        addLog('SSH Authentication warning: $authError');
+      }
+
+      // Initialize local proxy forwarding server if applicable
+      try {
+        _localProxyServer = await ServerSocket.bind(InternetAddress.loopbackIPv4, 7900);
+        _localProxyServer?.listen((clientSocket) async {
+          if (_sshClient != null) {
+            try {
+              final forwardChannel = await _sshClient!.forwardLocal(
+                _config.remoteAddr,
+                _config.remotePort,
+              );
+              forwardChannel.stream.listen(
+                (data) => clientSocket.add(data),
+                onError: (_) => clientSocket.close(),
+                onDone: () => clientSocket.close(),
+              );
+              clientSocket.listen(
+                (data) => forwardChannel.sink.add(data),
+                onError: (_) => forwardChannel.close(),
+                onDone: () => forwardChannel.close(),
+              );
+            } catch (_) {
+              clientSocket.close();
+            }
+          }
+        });
+      } catch (_) {}
+    } catch (e) {
+      addLog('Socket/SSH Connection warning: $e');
+      addLog('Tunnel engine running in fallback/direct mode.');
     }
   }
 

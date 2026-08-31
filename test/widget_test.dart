@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:sslh_sshl/main.dart';
-import 'package:sslh_sshl/services/tunnel_engine.dart';
+import 'package:httpku/main.dart';
+import 'package:httpku/services/tunnel_engine.dart';
 
 void main() {
   testWidgets('App renders main UI controls correctly', (WidgetTester tester) async {
@@ -11,13 +11,13 @@ void main() {
           ChangeNotifierProvider(create: (_) => TunnelEngine()),
           ChangeNotifierProvider(create: (_) => ThemeProvider(false)),
         ],
-        child: const SSLHApp(),
+        child: const HttpKuApp(),
       ),
     );
 
     await tester.pumpAndSettle();
 
-    expect(find.text('SSLH/SSHL'), findsOneWidget);
+    expect(find.text('HttpKu'), findsNWidgets(2));
     expect(find.text('1.0 build 33 ndk 23.1.777...'), findsOneWidget);
     expect(find.text('remote_addr'), findsOneWidget);
     expect(find.text('remote_port'), findsOneWidget);

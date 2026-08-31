@@ -15,7 +15,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => TunnelEngine()),
         ChangeNotifierProvider(create: (_) => ThemeProvider(isDarkMode)),
       ],
-      child: const SSLHApp(),
+      child: const HttpKuApp(),
     ),
   );
 }
@@ -35,15 +35,15 @@ class ThemeProvider extends ChangeNotifier {
   }
 }
 
-class SSLHApp extends StatelessWidget {
-  const SSLHApp({super.key});
+class HttpKuApp extends StatelessWidget {
+  const HttpKuApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return MaterialApp(
-      title: 'SSLH/SSHL',
+      title: 'HttpKu',
       debugShowCheckedModeBanner: false,
       themeMode: themeProvider.isDark ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
