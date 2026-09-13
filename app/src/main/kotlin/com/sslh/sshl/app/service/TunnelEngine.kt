@@ -28,7 +28,27 @@ class TunnelEngine {
     var detectedIp: String = "10.193.165.137"
         private set
 
-    var listener: (() -> Unit)? = null
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    var listener: (() -> Unit)?
+        get() = listeners.firstOrNull()
+        set(value) {
+            if (value != null) {
+                if (!listeners.contains(value)) {
+                    listeners.add(value)
+                }
+            }
+        }
+
+    fun addListener(l: () -> Unit) {
+        if (!listeners.contains(l)) {
+            listeners.add(l)
+        }
+    }
+
+    fun removeListener(l: () -> Unit) {
+        listeners.remove(l)
+    }
 
     private var jschSession: Session? = null
     private var localProxyServer: ServerSocket? = null
@@ -63,7 +83,11 @@ class TunnelEngine {
     }
 
     private fun notifyListener() {
-        listener?.invoke()
+        for (l in listeners) {
+            try {
+                l.invoke()
+            } catch (_: Exception) {}
+        }
     }
 
     fun refreshDetectedIp() {
@@ -147,50 +171,65 @@ class TunnelEngine {
     }
 
     private fun connectTunnelInternal() {
-        val targetHost = if (config.remoteAddr.isNotEmpty()) config.remoteAddr else config.httpAddr
+        val targetHost = if (config.remoteAddr.isNotBlank()) config.remoteAddr else config.httpAddr
         val host = if (config.type == TunnelType.HTTP || config.type == TunnelType.SSL) {
-            if (config.httpAddr.isNotEmpty()) config.httpAddr else targetHost
+            if (config.httpAddr.isNotBlank()) config.httpAddr else targetHost
         } else {
             targetHost
         }
         val port = if (config.type == TunnelType.HTTP) config.httpPort else config.remotePort
 
-        try {
-            val socket: Socket = when (config.type) {
-                TunnelType.SSL -> {
-                    val sslContext = SSLContext.getInstance("TLS")
-                    val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-                        override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-                        override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-                        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
-                    })
-                    sslContext.init(null, trustAllCerts, java.security.SecureRandom())
-                    val sslFactory: SSLSocketFactory = sslContext.socketFactory
-                    sslFactory.createSocket(host, port)
+        if (host.isNotBlank()) {
+            try {
+                val socket: Socket = when (config.type) {
+                    TunnelType.SSL -> {
+                        val sslContext = SSLContext.getInstance("TLS")
+                        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                            override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
+                            override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
+                            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+                        })
+                        sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+                        val sslFactory: SSLSocketFactory = sslContext.socketFactory
+                        val s = sslFactory.createSocket()
+                        s.connect(java.net.InetSocketAddress(host, port), 5000)
+                        s
+                    }
+                    else -> {
+                        val s = Socket()
+                        s.connect(java.net.InetSocketAddress(host, port), 5000)
+                        s
+                    }
                 }
-                else -> Socket(host, port)
-            }
 
-            if (config.type == TunnelType.HAPROXY) {
-                val proxyHeader = "PROXY TCP4 127.0.0.1 ${config.remoteAddr} 12345 ${config.remotePort}\r\n"
-                socket.getOutputStream().write(proxyHeader.toByteArray(Charsets.US_ASCII))
-                socket.getOutputStream().flush()
-            }
+                if (config.type == TunnelType.HAPROXY) {
+                    val proxyHeader = "PROXY TCP4 127.0.0.1 ${if (config.remoteAddr.isNotBlank()) config.remoteAddr else "127.0.0.1"} 12345 $port\r\n"
+                    socket.getOutputStream().write(proxyHeader.toByteArray(Charsets.US_ASCII))
+                    socket.getOutputStream().flush()
+                }
 
-            if (config.type == TunnelType.HTTP && config.customPayload && config.payload.isNotEmpty()) {
-                val parsedPayload = PayloadGenerator.parsePayload(
-                    config.payload,
-                    host = config.remoteAddr,
-                    port = config.remotePort,
-                    statusLine = config.customHttpResponse
-                )
-                addLog("Sending payload:\n$parsedPayload")
-                val os = socket.getOutputStream()
-                os.write(parsedPayload.toByteArray(Charsets.US_ASCII))
-                os.flush()
+                if (config.type == TunnelType.HTTP && config.customPayload && config.payload.isNotEmpty()) {
+                    val parsedPayload = PayloadGenerator.parsePayload(
+                        config.payload,
+                        host = if (config.remoteAddr.isNotBlank()) config.remoteAddr else host,
+                        port = config.remotePort,
+                        statusLine = config.customHttpResponse
+                    )
+                    addLog("Sending payload:\n$parsedPayload")
+                    val os = socket.getOutputStream()
+                    os.write(parsedPayload.toByteArray(Charsets.US_ASCII))
+                    os.flush()
+                }
+            } catch (e: Exception) {
+                addLog("Socket Connection warning: ${e.message}")
+                addLog("Tunnel engine running in fallback mode.")
             }
+        } else {
+            addLog("No remote address specified. Running in fallback mode.")
+        }
 
-            // Establish SSH session over connection if credentials provided
+        // Establish SSH session over connection if credentials provided
+        if (config.remoteAddr.isNotBlank()) {
             try {
                 val jsch = JSch()
                 val user = if (config.remoteUsername.isEmpty()) "root" else config.remoteUsername
@@ -203,29 +242,37 @@ class TunnelEngine {
                 addLog("SSH Warning: ${sshEx.message}")
                 addLog("Tunnel engine running in direct proxy mode.")
             }
+        }
 
-            // Bind local proxy port
-            try {
-                localProxyServer = ServerSocket(7900, 50, InetAddress.getByName("127.0.0.1"))
-                thread {
-                    while (isRunning && localProxyServer != null && !localProxyServer!!.isClosed) {
-                        try {
-                            val clientSocket = localProxyServer!!.accept()
-                            thread {
-                                try {
-                                    clientSocket.close()
-                                } catch (_: Exception) {}
-                            }
-                        } catch (_: Exception) {
-                            break
+        // Bind local proxy port cleanly
+        try {
+            localProxyServer?.close()
+        } catch (_: Exception) {}
+        localProxyServer = null
+
+        try {
+            val serverSocket = ServerSocket()
+            serverSocket.reuseAddress = true
+            serverSocket.bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), 7900))
+            localProxyServer = serverSocket
+
+            thread {
+                val server = localProxyServer
+                while (isRunning && server != null && !server.isClosed) {
+                    try {
+                        val clientSocket = server.accept()
+                        thread {
+                            try {
+                                clientSocket.close()
+                            } catch (_: Exception) {}
                         }
+                    } catch (_: Exception) {
+                        break
                     }
                 }
-            } catch (_: Exception) {}
-
+            }
         } catch (e: Exception) {
-            addLog("Socket Connection warning: ${e.message}")
-            addLog("Tunnel engine running in fallback mode.")
+            addLog("Local Proxy Server warning: ${e.message}")
         }
     }
 

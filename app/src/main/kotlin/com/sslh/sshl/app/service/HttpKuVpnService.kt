@@ -36,7 +36,15 @@ class HttpKuVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, createNotification("HttpKu Tunnel Active"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification("HttpKu Tunnel Active"),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification("HttpKu Tunnel Active"))
+        }
         setupVpnInterface()
         return START_STICKY
     }
@@ -63,7 +71,12 @@ class HttpKuVpnService : VpnService() {
             vpnInterface?.close()
         } catch (_: Exception) {}
         vpnInterface = null
-        stopForeground(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         stopSelf()
     }
 

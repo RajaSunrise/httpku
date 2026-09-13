@@ -203,9 +203,8 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, HttpKuVpnService::class.java).apply {
             action = HttpKuVpnService.ACTION_START
         }
-        startService(intent)
+        androidx.core.content.ContextCompat.startForegroundService(this, intent)
         tunnelEngine.startTunnel()
-        showLogsDialog()
     }
 
     private fun stopVpnAndEngine() {
@@ -264,6 +263,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUIFromEngine() {
+        val isRunning = tunnelEngine.status != TunnelStatus.DISCONNECTED
+        val isEditable = !isRunning
+
+        binding.etRemoteAddr.isEnabled = isEditable
+        binding.etRemotePort.isEnabled = isEditable
+        binding.etRemoteUsername.isEnabled = isEditable
+        binding.etRemotePassword.isEnabled = isEditable
+        binding.etHttpAddr.isEnabled = isEditable
+        binding.etHttpPort.isEnabled = isEditable
+        binding.etDnsServer.isEnabled = isEditable
+        binding.etCustomResponse.isEnabled = isEditable
+        binding.etPayload.isEnabled = isEditable
+
+        binding.switchProxyAuth.isEnabled = isEditable
+        binding.switchReplaceResponse.isEnabled = isEditable
+        binding.switchCustomPayload.isEnabled = isEditable
+        binding.switchDetectIp.isEnabled = isEditable
+
+        binding.btnGenerator1.isEnabled = isEditable
+        binding.btnGenerator2.isEnabled = isEditable
+
+        binding.rgTunnelType.isEnabled = isEditable
+        for (i in 0 until binding.rgTunnelType.childCount) {
+            binding.rgTunnelType.getChildAt(i).isEnabled = isEditable
+        }
+
         binding.tvDetectIp.text = "detect_ipv4 ${tunnelEngine.detectedIp}"
 
         binding.btnStartStop.text = when (tunnelEngine.status) {
@@ -364,11 +389,10 @@ class MainActivity : AppCompatActivity() {
                 updateLogView()
             }
         }
-        tunnelEngine.listener = {
-            runOnUiThread {
-                updateUIFromEngine()
-                updateLogView()
-            }
+        tunnelEngine.addListener(logListener)
+
+        dialog.setOnDismissListener {
+            tunnelEngine.removeListener(logListener)
         }
 
         btnClear.setOnClickListener {
