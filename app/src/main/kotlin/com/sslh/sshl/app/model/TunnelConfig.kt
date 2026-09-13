@@ -11,12 +11,12 @@ data class TunnelConfig(
     val created: String = getCurrentDateString(),
     val lastModified: String = getCurrentDateString(),
     val expiration: String = "indeterminate",
-    val remoteAddr: String = "id1.jagoanip.my.id",
+    val remoteAddr: String = "",
     val remotePort: Int = 443,
     val remoteUsername: String = "",
     val remotePassword: String = "",
     val type: TunnelType = TunnelType.HTTP,
-    val httpAddr: String = "bisnis.udemy.com",
+    val httpAddr: String = "",
     val httpPort: Int = 8080,
     val dnsServer: String = "1.1.1.1",
     val dnsPort: Int = 53,
@@ -25,7 +25,7 @@ data class TunnelConfig(
     val replaceHttpResponse: Boolean = true,
     val customHttpResponse: String = "HTTP/1.1 200 Connection established",
     val customPayload: Boolean = true,
-    val payload: String = "GET / HTTP/1.1[crlf]Host: id1.jagoanip.my.id[crlf]Upgrade: websocket[crlf][crlf]",
+    val payload: String = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf]",
     val detectIpv4: Boolean = true
 ) {
     fun toJson(): String {

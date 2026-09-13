@@ -147,10 +147,11 @@ class TunnelEngine {
     }
 
     private fun connectTunnelInternal() {
+        val targetHost = if (config.remoteAddr.isNotEmpty()) config.remoteAddr else config.httpAddr
         val host = if (config.type == TunnelType.HTTP || config.type == TunnelType.SSL) {
-            if (config.httpAddr.isNotEmpty()) config.httpAddr else config.remoteAddr
+            if (config.httpAddr.isNotEmpty()) config.httpAddr else targetHost
         } else {
-            config.remoteAddr
+            targetHost
         }
         val port = if (config.type == TunnelType.HTTP) config.httpPort else config.remotePort
 

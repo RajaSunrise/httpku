@@ -1,6 +1,8 @@
 package com.sslh.sshl.app
 
 import android.content.Context
+import android.content.Intent
+import android.net.VpnService
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -12,6 +14,7 @@ import android.widget.CheckBox
 import android.widget.RadioButton
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -20,6 +23,7 @@ import com.sslh.sshl.app.databinding.ActivityMainBinding
 import com.sslh.sshl.app.model.TunnelConfig
 import com.sslh.sshl.app.model.TunnelStatus
 import com.sslh.sshl.app.model.TunnelType
+import com.sslh.sshl.app.service.HttpKuVpnService
 import com.sslh.sshl.app.service.PayloadGenerator
 import com.sslh.sshl.app.service.PayloadGeneratorOptions
 import com.sslh.sshl.app.service.TunnelEngine
@@ -31,6 +35,14 @@ class MainActivity : AppCompatActivity() {
     private val PREFS_NAME = "httpku_prefs"
     private val KEY_CONFIG = "tunnel_config"
     private val KEY_DARK_MODE = "is_dark_mode"
+
+    private val vpnPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            startVpnAndEngine()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -135,6 +147,7 @@ class MainActivity : AppCompatActivity() {
             }
             tunnelEngine.updateConfig(tunnelEngine.config.copy(type = type))
             saveConfig()
+            updateFieldVisibilities(type)
         }
 
         binding.switchProxyAuth.setOnCheckedChangeListener { _, isChecked ->
@@ -145,11 +158,13 @@ class MainActivity : AppCompatActivity() {
         binding.switchReplaceResponse.setOnCheckedChangeListener { _, isChecked ->
             tunnelEngine.updateConfig(tunnelEngine.config.copy(replaceHttpResponse = isChecked))
             saveConfig()
+            updateFieldVisibilities(tunnelEngine.config.type)
         }
 
         binding.switchCustomPayload.setOnCheckedChangeListener { _, isChecked ->
             tunnelEngine.updateConfig(tunnelEngine.config.copy(customPayload = isChecked))
             saveConfig()
+            updateFieldVisibilities(tunnelEngine.config.type)
         }
 
         binding.switchDetectIp.setOnCheckedChangeListener { _, isChecked ->
@@ -166,14 +181,39 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnStartStop.setOnClickListener {
             if (tunnelEngine.isConnected || tunnelEngine.isConnecting) {
-                tunnelEngine.stopTunnel()
+                stopVpnAndEngine()
             } else {
-                tunnelEngine.startTunnel()
-                showLogsDialog()
+                prepareAndStartVpn()
             }
         }
 
         updateUIFromEngine()
+    }
+
+    private fun prepareAndStartVpn() {
+        val vpnIntent = VpnService.prepare(this)
+        if (vpnIntent != null) {
+            vpnPermissionLauncher.launch(vpnIntent)
+        } else {
+            startVpnAndEngine()
+        }
+    }
+
+    private fun startVpnAndEngine() {
+        val intent = Intent(this, HttpKuVpnService::class.java).apply {
+            action = HttpKuVpnService.ACTION_START
+        }
+        startService(intent)
+        tunnelEngine.startTunnel()
+        showLogsDialog()
+    }
+
+    private fun stopVpnAndEngine() {
+        tunnelEngine.stopTunnel()
+        val intent = Intent(this, HttpKuVpnService::class.java).apply {
+            action = HttpKuVpnService.ACTION_STOP
+        }
+        startService(intent)
     }
 
     private fun setTunnelTypeRadio(type: TunnelType) {
@@ -185,6 +225,26 @@ class MainActivity : AppCompatActivity() {
             TunnelType.DNS -> binding.rbDns.isChecked = true
             TunnelType.HAPROXY -> binding.rbHaproxy.isChecked = true
         }
+        updateFieldVisibilities(type)
+    }
+
+    private fun updateFieldVisibilities(type: TunnelType) {
+        val showHttp = type == TunnelType.HTTP
+        val showSsl = type == TunnelType.SSL
+        val showDns = type == TunnelType.DNS
+        val showSocks = type == TunnelType.SOCKS
+        val showHaproxy = type == TunnelType.HAPROXY
+
+        binding.tilHttpAddr.visibility = if (showHttp || showSsl || showSocks || showHaproxy) View.VISIBLE else View.GONE
+        binding.tilHttpPort.visibility = if (showHttp || showSocks || showHaproxy) View.VISIBLE else View.GONE
+        binding.tilDnsServer.visibility = if (showDns) View.VISIBLE else View.GONE
+
+        binding.containerProxyAuth.visibility = if (showHttp || showSocks) View.VISIBLE else View.GONE
+        binding.containerReplaceResponse.visibility = if (showHttp) View.VISIBLE else View.GONE
+        binding.tilCustomResponse.visibility = if (showHttp && binding.switchReplaceResponse.isChecked) View.VISIBLE else View.GONE
+        binding.containerCustomPayload.visibility = if (showHttp) View.VISIBLE else View.GONE
+        binding.tilPayload.visibility = if (showHttp && binding.switchCustomPayload.isChecked) View.VISIBLE else View.GONE
+        binding.containerGenerators.visibility = if (showHttp) View.VISIBLE else View.GONE
     }
 
     private fun updateEngineConfigFromFields() {
@@ -211,6 +271,24 @@ class MainActivity : AppCompatActivity() {
             TunnelStatus.CONNECTING -> "connecting..."
             TunnelStatus.DISCONNECTING -> "disconnecting..."
             TunnelStatus.DISCONNECTED -> "start"
+        }
+
+        when (tunnelEngine.status) {
+            TunnelStatus.CONNECTED -> {
+                binding.tvStatusBadge.text = "CONNECTED"
+                binding.tvStatusBadge.setTextColor(android.graphics.Color.parseColor("#4CAF50"))
+                binding.tvLogoIcon.setBackgroundResource(R.drawable.circle_bg_connected)
+            }
+            TunnelStatus.CONNECTING, TunnelStatus.DISCONNECTING -> {
+                binding.tvStatusBadge.text = if (tunnelEngine.status == TunnelStatus.CONNECTING) "CONNECTING..." else "DISCONNECTING..."
+                binding.tvStatusBadge.setTextColor(android.graphics.Color.parseColor("#FF9800"))
+                binding.tvLogoIcon.setBackgroundResource(R.drawable.circle_bg_connecting)
+            }
+            TunnelStatus.DISCONNECTED -> {
+                binding.tvStatusBadge.text = "DISCONNECTED"
+                binding.tvStatusBadge.setTextColor(android.graphics.Color.parseColor("#F44336"))
+                binding.tvLogoIcon.setBackgroundResource(R.drawable.circle_bg)
+            }
         }
     }
 

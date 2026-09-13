@@ -11,10 +11,10 @@ class TunnelConfigTest {
     fun testDefaultConfig() {
         val config = TunnelConfig()
         assertEquals("default", config.name)
-        assertEquals("id1.jagoanip.my.id", config.remoteAddr)
+        assertEquals("", config.remoteAddr)
         assertEquals(443, config.remotePort)
         assertEquals(TunnelType.HTTP, config.type)
-        assertEquals("bisnis.udemy.com", config.httpAddr)
+        assertEquals("", config.httpAddr)
         assertEquals(8080, config.httpPort)
         assertEquals("1.1.1.1", config.dnsServer)
         assertTrue(config.detectIpv4)
