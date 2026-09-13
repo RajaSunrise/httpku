@@ -1,0 +1,307 @@
+package com.sslh.sshl.app
+
+import android.content.Context
+import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
+import android.view.View
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.RadioButton
+import android.widget.Spinner
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import com.google.android.material.textfield.TextInputEditText
+import com.sslh.sshl.app.databinding.ActivityMainBinding
+import com.sslh.sshl.app.model.TunnelConfig
+import com.sslh.sshl.app.model.TunnelStatus
+import com.sslh.sshl.app.model.TunnelType
+import com.sslh.sshl.app.service.PayloadGenerator
+import com.sslh.sshl.app.service.PayloadGeneratorOptions
+import com.sslh.sshl.app.service.TunnelEngine
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var binding: ActivityMainBinding
+    private val tunnelEngine = TunnelEngine()
+    private val PREFS_NAME = "httpku_prefs"
+    private val KEY_CONFIG = "tunnel_config"
+    private val KEY_DARK_MODE = "is_dark_mode"
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isDarkMode = prefs.getBoolean(KEY_DARK_MODE, false)
+        if (isDarkMode) {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+        } else {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+        }
+
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        loadSavedConfig()
+        setupUI()
+
+        tunnelEngine.listener = {
+            runOnUiThread {
+                updateUIFromEngine()
+            }
+        }
+    }
+
+    private fun loadSavedConfig() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val json = prefs.getString(KEY_CONFIG, null)
+        val config = if (!json.isNullOrEmpty()) {
+            TunnelConfig.fromJson(json)
+        } else {
+            TunnelConfig()
+        }
+        tunnelEngine.updateConfig(config)
+    }
+
+    private fun saveConfig() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_CONFIG, tunnelEngine.config.toJson()).apply()
+    }
+
+    private fun setupUI() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isDarkMode = prefs.getBoolean(KEY_DARK_MODE, false)
+        binding.switchDarkMode.isChecked = isDarkMode
+
+        binding.switchDarkMode.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(KEY_DARK_MODE, isChecked).apply()
+            if (isChecked) {
+                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+            } else {
+                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+            }
+        }
+
+        val config = tunnelEngine.config
+        binding.etRemoteAddr.setText(config.remoteAddr)
+        binding.etRemotePort.setText(config.remotePort.toString())
+        binding.etRemoteUsername.setText(config.remoteUsername)
+        binding.etRemotePassword.setText(config.remotePassword)
+
+        binding.etHttpAddr.setText(config.httpAddr)
+        binding.etHttpPort.setText(config.httpPort.toString())
+        binding.etDnsServer.setText(config.dnsServer)
+        binding.etCustomResponse.setText(config.customHttpResponse)
+        binding.etPayload.setText(config.payload)
+
+        binding.switchProxyAuth.isChecked = config.proxyAuthorization
+        binding.switchReplaceResponse.isChecked = config.replaceHttpResponse
+        binding.switchCustomPayload.isChecked = config.customPayload
+        binding.switchDetectIp.isChecked = config.detectIpv4
+
+        setTunnelTypeRadio(config.type)
+
+        // Text Watchers
+        val textWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                updateEngineConfigFromFields()
+            }
+        }
+
+        binding.etRemoteAddr.addTextChangedListener(textWatcher)
+        binding.etRemotePort.addTextChangedListener(textWatcher)
+        binding.etRemoteUsername.addTextChangedListener(textWatcher)
+        binding.etRemotePassword.addTextChangedListener(textWatcher)
+        binding.etHttpAddr.addTextChangedListener(textWatcher)
+        binding.etHttpPort.addTextChangedListener(textWatcher)
+        binding.etDnsServer.addTextChangedListener(textWatcher)
+        binding.etCustomResponse.addTextChangedListener(textWatcher)
+        binding.etPayload.addTextChangedListener(textWatcher)
+
+        binding.rgTunnelType.setOnCheckedChangeListener { _, checkedId ->
+            val type = when (checkedId) {
+                binding.rbDirect.id -> TunnelType.DIRECT
+                binding.rbHttp.id -> TunnelType.HTTP
+                binding.rbSsl.id -> TunnelType.SSL
+                binding.rbSocks.id -> TunnelType.SOCKS
+                binding.rbDns.id -> TunnelType.DNS
+                binding.rbHaproxy.id -> TunnelType.HAPROXY
+                else -> TunnelType.HTTP
+            }
+            tunnelEngine.updateConfig(tunnelEngine.config.copy(type = type))
+            saveConfig()
+        }
+
+        binding.switchProxyAuth.setOnCheckedChangeListener { _, isChecked ->
+            tunnelEngine.updateConfig(tunnelEngine.config.copy(proxyAuthorization = isChecked))
+            saveConfig()
+        }
+
+        binding.switchReplaceResponse.setOnCheckedChangeListener { _, isChecked ->
+            tunnelEngine.updateConfig(tunnelEngine.config.copy(replaceHttpResponse = isChecked))
+            saveConfig()
+        }
+
+        binding.switchCustomPayload.setOnCheckedChangeListener { _, isChecked ->
+            tunnelEngine.updateConfig(tunnelEngine.config.copy(customPayload = isChecked))
+            saveConfig()
+        }
+
+        binding.switchDetectIp.setOnCheckedChangeListener { _, isChecked ->
+            tunnelEngine.updateConfig(tunnelEngine.config.copy(detectIpv4 = isChecked))
+            if (isChecked) {
+                tunnelEngine.refreshDetectedIp()
+            }
+            saveConfig()
+        }
+
+        binding.btnGenerator1.setOnClickListener { showPayloadGeneratorDialog() }
+        binding.btnGenerator2.setOnClickListener { showPayloadGeneratorDialog() }
+        binding.btnViewLogs.setOnClickListener { showLogsDialog() }
+
+        binding.btnStartStop.setOnClickListener {
+            if (tunnelEngine.isConnected || tunnelEngine.isConnecting) {
+                tunnelEngine.stopTunnel()
+            } else {
+                tunnelEngine.startTunnel()
+                showLogsDialog()
+            }
+        }
+
+        updateUIFromEngine()
+    }
+
+    private fun setTunnelTypeRadio(type: TunnelType) {
+        when (type) {
+            TunnelType.DIRECT -> binding.rbDirect.isChecked = true
+            TunnelType.HTTP -> binding.rbHttp.isChecked = true
+            TunnelType.SSL -> binding.rbSsl.isChecked = true
+            TunnelType.SOCKS -> binding.rbSocks.isChecked = true
+            TunnelType.DNS -> binding.rbDns.isChecked = true
+            TunnelType.HAPROXY -> binding.rbHaproxy.isChecked = true
+        }
+    }
+
+    private fun updateEngineConfigFromFields() {
+        val newConfig = tunnelEngine.config.copy(
+            remoteAddr = binding.etRemoteAddr.text.toString(),
+            remotePort = binding.etRemotePort.text.toString().toIntOrNull() ?: 443,
+            remoteUsername = binding.etRemoteUsername.text.toString(),
+            remotePassword = binding.etRemotePassword.text.toString(),
+            httpAddr = binding.etHttpAddr.text.toString(),
+            httpPort = binding.etHttpPort.text.toString().toIntOrNull() ?: 8080,
+            dnsServer = binding.etDnsServer.text.toString(),
+            customHttpResponse = binding.etCustomResponse.text.toString(),
+            payload = binding.etPayload.text.toString()
+        )
+        tunnelEngine.updateConfig(newConfig)
+        saveConfig()
+    }
+
+    private fun updateUIFromEngine() {
+        binding.tvDetectIp.text = "detect_ipv4 ${tunnelEngine.detectedIp}"
+
+        binding.btnStartStop.text = when (tunnelEngine.status) {
+            TunnelStatus.CONNECTED -> "stop"
+            TunnelStatus.CONNECTING -> "connecting..."
+            TunnelStatus.DISCONNECTING -> "disconnecting..."
+            TunnelStatus.DISCONNECTED -> "start"
+        }
+    }
+
+    private fun showPayloadGeneratorDialog() {
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_payload_generator, null)
+        val etUrl = dialogView.findViewById<TextInputEditText>(R.id.etPayloadUrl)
+        val spinnerMethod = dialogView.findViewById<Spinner>(R.id.spinnerMethod)
+        val spinnerInjection = dialogView.findViewById<Spinner>(R.id.spinnerInjection)
+        val cbUpgradeWs = dialogView.findViewById<CheckBox>(R.id.cbUpgradeWs)
+        val cbKeepAlive = dialogView.findViewById<CheckBox>(R.id.cbKeepAlive)
+        val cbUserAgent = dialogView.findViewById<CheckBox>(R.id.cbUserAgent)
+        val cbReferer = dialogView.findViewById<CheckBox>(R.id.cbReferer)
+        val cbForwardedHost = dialogView.findViewById<CheckBox>(R.id.cbForwardedHost)
+        val btnCancel = dialogView.findViewById<Button>(R.id.btnCancelPayload)
+        val btnApply = dialogView.findViewById<Button>(R.id.btnApplyPayload)
+
+        val methods = arrayOf("GET", "POST", "CONNECT", "HEAD", "PUT", "DELETE")
+        val injections = arrayOf("Normal", "Front Inject", "Back Inject")
+
+        spinnerMethod.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, methods)
+        spinnerInjection.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, injections)
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        btnCancel.setOnClickListener { dialog.dismiss() }
+
+        btnApply.setOnClickListener {
+            val options = PayloadGeneratorOptions(
+                url = etUrl.text.toString(),
+                method = methods[spinnerMethod.selectedItemPosition],
+                injectionMethod = injections[spinnerInjection.selectedItemPosition],
+                upgradeWebsocket = cbUpgradeWs.isChecked,
+                keepAlive = cbKeepAlive.isChecked,
+                userAgent = cbUserAgent.isChecked,
+                referer = cbReferer.isChecked,
+                forwardedHost = cbForwardedHost.isChecked
+            )
+            val generated = PayloadGenerator.generatePayload(options)
+            binding.etPayload.setText(generated)
+            updateEngineConfigFromFields()
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+
+    private fun showLogsDialog() {
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_logs, null)
+        val tvLogText = dialogView.findViewById<TextView>(R.id.tvLogText)
+        val btnClear = dialogView.findViewById<Button>(R.id.btnClearLogs)
+        val btnClose = dialogView.findViewById<Button>(R.id.btnCloseLogs)
+
+        fun updateLogView() {
+            val sb = StringBuilder()
+            synchronized(tunnelEngine.logs) {
+                for (log in tunnelEngine.logs) {
+                    sb.append("[${log.formattedTime}] ${log.message}\n")
+                }
+            }
+            tvLogText.text = sb.toString()
+        }
+
+        updateLogView()
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        val logListener = {
+            runOnUiThread {
+                updateLogView()
+            }
+        }
+        tunnelEngine.listener = {
+            runOnUiThread {
+                updateUIFromEngine()
+                updateLogView()
+            }
+        }
+
+        btnClear.setOnClickListener {
+            tunnelEngine.clearLogs()
+            updateLogView()
+        }
+
+        btnClose.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+}
