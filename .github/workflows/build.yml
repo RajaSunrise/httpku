@@ -18,23 +18,17 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Run Unit Tests
+        run: ./gradlew test
 
-      - name: Run tests
-        run: flutter test
-
-      - name: Build Android ARMv7 and ARMv8 APKs
-        run: flutter build apk --target-platform android-arm,android-arm64 --split-per-abi
+      - name: Build Android Release APK
+        run: ./gradlew assembleRelease
 
       - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-apks
-          path: build/app/outputs/flutter-apk/*.apk
+          path: app/build/outputs/apk/release/*.apk

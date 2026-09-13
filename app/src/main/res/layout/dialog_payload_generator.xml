@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Payload Generator"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="URL / Host">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etPayloadUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="id1.jagoanip.my.id" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Method"
+            android:textColor="#888888" />
+
+        <Spinner
+            android:id="@+id/spinnerMethod"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Injection Method"
+            android:textColor="#888888" />
+
+        <Spinner
+            android:id="@+id/spinnerInjection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp" />
+
+        <CheckBox
+            android:id="@+id/cbUpgradeWs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:checked="true"
+            android:text="Upgrade WebSocket" />
+
+        <CheckBox
+            android:id="@+id/cbKeepAlive"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Keep-Alive" />
+
+        <CheckBox
+            android:id="@+id/cbUserAgent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="User-Agent" />
+
+        <CheckBox
+            android:id="@+id/cbReferer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Referer" />
+
+        <CheckBox
+            android:id="@+id/cbForwardedHost"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="X-Forwarded-Host" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="end"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnCancelPayload"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Cancel" />
+
+            <Button
+                android:id="@+id/btnApplyPayload"
+                style="@style/Widget.MaterialComponents.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Generate" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>
