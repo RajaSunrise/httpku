@@ -54,9 +54,34 @@ class TunnelEngine {
     private var localProxyServer: ServerSocket? = null
     @Volatile
     private var isRunning = false
+    @Volatile
+    private var shouldAutoReconnect = false
 
     val isConnected: Boolean get() = status == TunnelStatus.CONNECTED
     val isConnecting: Boolean get() = status == TunnelStatus.CONNECTING
+    val isWaitingForNetwork: Boolean get() = status == TunnelStatus.WAITING_FOR_NETWORK
+
+    fun onNetworkLost() {
+        if (status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING) {
+            shouldAutoReconnect = true
+            status = TunnelStatus.WAITING_FOR_NETWORK
+            addLog("No network connection available. Waiting for network...", isError = true)
+            notifyListener()
+        }
+    }
+
+    fun onNetworkAvailable() {
+        if (status == TunnelStatus.WAITING_FOR_NETWORK || shouldAutoReconnect) {
+            shouldAutoReconnect = false
+            addLog("Network connection restored. Reconnecting...", isHighlight = true)
+            reconnectTunnel()
+        }
+    }
+
+    fun reconnectTunnel() {
+        stopTunnelInternal(clearAutoReconnect = false)
+        startTunnel()
+    }
 
     fun updateConfig(newConfig: TunnelConfig) {
         config = newConfig
@@ -277,6 +302,13 @@ class TunnelEngine {
     }
 
     fun stopTunnel() {
+        stopTunnelInternal(clearAutoReconnect = true)
+    }
+
+    private fun stopTunnelInternal(clearAutoReconnect: Boolean) {
+        if (clearAutoReconnect) {
+            shouldAutoReconnect = false
+        }
         status = TunnelStatus.DISCONNECTING
         isRunning = false
         notifyListener()
@@ -291,8 +323,10 @@ class TunnelEngine {
         } catch (_: Exception) {}
         localProxyServer = null
 
-        status = TunnelStatus.DISCONNECTED
-        addLog("VPN disconnected.")
+        if (clearAutoReconnect) {
+            status = TunnelStatus.DISCONNECTED
+            addLog("VPN disconnected.")
+        }
         notifyListener()
     }
 }

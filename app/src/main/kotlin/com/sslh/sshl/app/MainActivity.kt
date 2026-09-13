@@ -200,6 +200,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpnAndEngine() {
+        HttpKuVpnService.tunnelEngine = tunnelEngine
         val intent = Intent(this, HttpKuVpnService::class.java).apply {
             action = HttpKuVpnService.ACTION_START
         }
@@ -266,6 +267,8 @@ class MainActivity : AppCompatActivity() {
         val isRunning = tunnelEngine.status != TunnelStatus.DISCONNECTED
         val isEditable = !isRunning
 
+        binding.switchDarkMode.isEnabled = isEditable
+
         binding.etRemoteAddr.isEnabled = isEditable
         binding.etRemotePort.isEnabled = isEditable
         binding.etRemoteUsername.isEnabled = isEditable
@@ -295,6 +298,7 @@ class MainActivity : AppCompatActivity() {
             TunnelStatus.CONNECTED -> "stop"
             TunnelStatus.CONNECTING -> "connecting..."
             TunnelStatus.DISCONNECTING -> "disconnecting..."
+            TunnelStatus.WAITING_FOR_NETWORK -> "waiting for network..."
             TunnelStatus.DISCONNECTED -> "start"
         }
 
@@ -304,8 +308,12 @@ class MainActivity : AppCompatActivity() {
                 binding.tvStatusBadge.setTextColor(android.graphics.Color.parseColor("#4CAF50"))
                 binding.tvLogoIcon.setBackgroundResource(R.drawable.circle_bg_connected)
             }
-            TunnelStatus.CONNECTING, TunnelStatus.DISCONNECTING -> {
-                binding.tvStatusBadge.text = if (tunnelEngine.status == TunnelStatus.CONNECTING) "CONNECTING..." else "DISCONNECTING..."
+            TunnelStatus.CONNECTING, TunnelStatus.DISCONNECTING, TunnelStatus.WAITING_FOR_NETWORK -> {
+                binding.tvStatusBadge.text = when (tunnelEngine.status) {
+                    TunnelStatus.CONNECTING -> "CONNECTING..."
+                    TunnelStatus.DISCONNECTING -> "DISCONNECTING..."
+                    else -> "WAITING FOR NETWORK..."
+                }
                 binding.tvStatusBadge.setTextColor(android.graphics.Color.parseColor("#FF9800"))
                 binding.tvLogoIcon.setBackgroundResource(R.drawable.circle_bg_connecting)
             }
