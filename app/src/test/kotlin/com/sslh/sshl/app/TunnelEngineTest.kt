@@ -94,4 +94,20 @@ class TunnelEngineTest {
             assertEquals(TunnelStatus.DISCONNECTED, engine.status)
         }
     }
+
+    @Test
+    fun testNetworkLossAndAutoReconnect() {
+        val engine = TunnelEngine()
+        engine.startTunnel()
+        Thread.sleep(200)
+
+        engine.onNetworkLost()
+        assertTrue(engine.isWaitingForNetwork)
+
+        engine.onNetworkAvailable()
+        Thread.sleep(200)
+
+        engine.stopTunnel()
+        assertEquals(TunnelStatus.DISCONNECTED, engine.status)
+    }
 }
