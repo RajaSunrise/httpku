@@ -55,4 +55,43 @@ class TunnelEngineTest {
         engine.stopTunnel()
         assertEquals(TunnelStatus.DISCONNECTED, engine.status)
     }
+
+    @Test
+    fun testMultipleListeners() {
+        val engine = TunnelEngine()
+        var listener1Called = false
+        var listener2Called = false
+
+        val l1 = { listener1Called = true }
+        val l2 = { listener2Called = true }
+
+        engine.addListener(l1)
+        engine.addListener(l2)
+
+        engine.addLog("Test log")
+
+        assertTrue(listener1Called)
+        assertTrue(listener2Called)
+
+        listener1Called = false
+        listener2Called = false
+
+        engine.removeListener(l1)
+        engine.addLog("Another log")
+
+        assertFalse(listener1Called)
+        assertTrue(listener2Called)
+    }
+
+    @Test
+    fun testRepeatedStartStopResilience() {
+        val engine = TunnelEngine()
+        // Simulate clicking start and stop multiple times (3-4 times) without socket error or crash
+        for (i in 1..4) {
+            engine.startTunnel()
+            Thread.sleep(150)
+            engine.stopTunnel()
+            assertEquals(TunnelStatus.DISCONNECTED, engine.status)
+        }
+    }
 }
