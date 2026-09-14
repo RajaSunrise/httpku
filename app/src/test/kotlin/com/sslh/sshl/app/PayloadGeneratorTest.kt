@@ -19,6 +19,17 @@ class PayloadGeneratorTest {
     }
 
     @Test
+    fun testParsePayloadExtendedTags() {
+        val rawPayload = "[method] [host_port] [protocol][lfcr][netData]"
+        val parsed = PayloadGenerator.parsePayload(rawPayload, host = "example.com", port = 8080)
+
+        assertTrue(parsed.contains("CONNECT"))
+        assertTrue(parsed.contains("example.com:8080"))
+        assertTrue(parsed.contains("\n\r"))
+        assertTrue(parsed.contains("CONNECT example.com:8080 HTTP/1.1\r\nHost: example.com:8080\r\n\r\n"))
+    }
+
+    @Test
     fun testGeneratePayloadNormalMode() {
         val options = PayloadGeneratorOptions(
             url = "example.com",
