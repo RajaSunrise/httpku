@@ -281,7 +281,29 @@ class HttpKuVpnService : VpnService() {
                                     val destAddress = java.net.InetAddress.getByAddress(dstIpBytes)
                                     val socket = java.net.Socket()
                                     protect(socket)
-                                    socket.connect(java.net.InetSocketAddress(destAddress, destPort), 5000)
+
+                                    var connected = false
+                                    try {
+                                        socket.connect(java.net.InetSocketAddress(destAddress, destPort), 6000)
+                                        connected = true
+                                    } catch (_: Exception) {
+                                        connected = false
+                                    }
+
+                                    if (!connected) {
+                                        try { socket.close() } catch (_: Exception) {}
+                                        val rstPacket = buildTcpPacket(
+                                            srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                            srcPort = destPort, dstPort = srcPort,
+                                            seqNum = 0L, ackNum = clientIsn + 1L,
+                                            flags = 0x14
+                                        )
+                                        synchronized(outputStream) {
+                                            outputStream.write(rstPacket)
+                                            outputStream.flush()
+                                        }
+                                        return@execute
+                                    }
 
                                     val session = TcpSession(socket, srcIpBytes, dstIpBytes, srcPort, destPort)
                                     session.clientSeq = clientIsn + 1L
@@ -530,22 +552,12 @@ class HttpKuVpnService : VpnService() {
         val elapsed = System.currentTimeMillis() - startTimeMillis
         val uptimeStr = formatUptime(elapsed)
 
-        val serverAddr = tunnelEngine?.config?.remoteAddr.takeIf { !it.isNullOrBlank() }
-            ?: tunnelEngine?.config?.httpAddr.takeIf { !it.isNullOrBlank() }
-            ?: "Server"
-
-        val title = when (tunnelEngine?.status) {
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "HttpKu - Terhubung"
-            com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "HttpKu - Menunggu Jaringan"
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "HttpKu - Menghubungkan"
-            else -> "HttpKu - Terhubung"
-        }
-
+        val titleText = "SSLH/SSHL: default"
         val statusText = when (tunnelEngine?.status) {
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "Aplikasi terhubung ke $serverAddr | Durasi: $uptimeStr"
-            com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "Menunggu koneksi internet..."
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "Menghubungkan ke server $serverAddr..."
-            else -> "Aplikasi terhubung ke $serverAddr | Durasi: $uptimeStr"
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "VPN connected"
+            com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "Waiting for network..."
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "Connecting..."
+            else -> "VPN connected"
         }
 
         val stopIntent = Intent(this, HttpKuVpnService::class.java).apply { action = ACTION_STOP }
@@ -554,15 +566,23 @@ class HttpKuVpnService : VpnService() {
         val restartIntent = Intent(this, HttpKuVpnService::class.java).apply { action = ACTION_RESTART }
         val restartPendingIntent = PendingIntent.getService(this, 2, restartIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
+        val remoteViews = android.widget.RemoteViews(packageName, com.sslh.sshl.app.R.layout.notification_vpn).apply {
+            setTextViewText(com.sslh.sshl.app.R.id.tvNotifHeader, "SSLH/SSHL")
+            setTextViewText(com.sslh.sshl.app.R.id.tvNotifUptime, uptimeStr)
+            setTextViewText(com.sslh.sshl.app.R.id.tvNotifTitle, titleText)
+            setTextViewText(com.sslh.sshl.app.R.id.tvNotifStatus, statusText)
+            setOnClickPendingIntent(com.sslh.sshl.app.R.id.btnNotifStop, stopPendingIntent)
+            setOnClickPendingIntent(com.sslh.sshl.app.R.id.btnNotifReconnect, restartPendingIntent)
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setCustomContentView(remoteViews)
+            .setCustomBigContentView(remoteViews)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .addAction(android.R.drawable.ic_menu_rotate, "CONNECT ULANG", restartPendingIntent)
-            .addAction(android.R.drawable.ic_media_pause, "STOP", stopPendingIntent)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this,

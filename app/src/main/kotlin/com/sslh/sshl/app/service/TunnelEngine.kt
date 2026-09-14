@@ -276,14 +276,21 @@ class TunnelEngine {
                 session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
                     override fun createSocket(host: String, port: Int): Socket {
                         val s = Socket()
-                        HttpKuVpnService.instance?.protectSocket(s)
-                        s.connect(java.net.InetSocketAddress(host, port), 5000)
+                        var vpn = HttpKuVpnService.instance
+                        var retries = 0
+                        while (vpn == null && retries < 20) {
+                            Thread.sleep(50)
+                            vpn = HttpKuVpnService.instance
+                            retries++
+                        }
+                        vpn?.protectSocket(s)
+                        s.connect(java.net.InetSocketAddress(host, port), 10000)
                         return s
                     }
                     override fun getInputStream(socket: Socket): java.io.InputStream = socket.getInputStream()
                     override fun getOutputStream(socket: Socket): java.io.OutputStream = socket.getOutputStream()
                 })
-                session.connect(5000)
+                session.connect(10000)
                 jschSession = session
             } catch (sshEx: Exception) {
                 addLog("SSH Warning: ${sshEx.message}")
