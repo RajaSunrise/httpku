@@ -138,6 +138,8 @@ class HttpKuVpnService : VpnService() {
     ) {
         @Volatile
         var clientSeq: Long = 1L
+        @Volatile
+        var serverSeq: Long = 1000L
     }
 
     private fun setupVpnInterface() {
@@ -225,11 +227,26 @@ class HttpKuVpnService : VpnService() {
                                     datagramSocket.close()
 
                                     val respDnsLen = recvPacket.length
-                                    val respPacket = ByteArray(ipHeaderLen + udpHeaderLen + respDnsLen)
+                                    val totalRespLen = ipHeaderLen + udpHeaderLen + respDnsLen
+                                    val respPacket = ByteArray(totalRespLen)
 
-                                    System.arraycopy(packetCopy, 0, respPacket, 0, ipHeaderLen)
-                                    System.arraycopy(packetCopy, 12, respPacket, 16, 4)
+                                    respPacket[0] = 0x45.toByte()
+                                    respPacket[1] = 0.toByte()
+                                    respPacket[2] = (totalRespLen ushr 8).toByte()
+                                    respPacket[3] = (totalRespLen and 0xFF).toByte()
+                                    respPacket[4] = packetCopy[4]
+                                    respPacket[5] = packetCopy[5]
+                                    respPacket[6] = 0x40.toByte()
+                                    respPacket[7] = 0.toByte()
+                                    respPacket[8] = 64.toByte()
+                                    respPacket[9] = 17.toByte()
+
                                     System.arraycopy(packetCopy, 16, respPacket, 12, 4)
+                                    System.arraycopy(packetCopy, 12, respPacket, 16, 4)
+
+                                    val ipChecksum = calcIpChecksum(respPacket, 0, ipHeaderLen)
+                                    respPacket[10] = (ipChecksum ushr 8).toByte()
+                                    respPacket[11] = (ipChecksum and 0xFF).toByte()
 
                                     respPacket[ipHeaderLen] = packetCopy[ipHeaderLen + 2]
                                     respPacket[ipHeaderLen + 1] = packetCopy[ipHeaderLen + 3]
@@ -322,14 +339,17 @@ class HttpKuVpnService : VpnService() {
 
                                     val session = TcpSession(socket, srcIpBytes, dstIpBytes, srcPort, destPort)
                                     session.clientSeq = clientIsn + 1L
+                                    session.serverSeq = 1000L
                                     tcpSessions[sessionKey] = session
 
                                     val synAck = buildTcpPacket(
                                         srcIp = dstIpBytes, dstIp = srcIpBytes,
                                         srcPort = destPort, dstPort = srcPort,
-                                        seqNum = 1000L, ackNum = session.clientSeq,
+                                        seqNum = session.serverSeq, ackNum = session.clientSeq,
                                         flags = 0x12
                                     )
+                                    session.serverSeq += 1L
+
                                     synchronized(outputStream) {
                                         outputStream.write(synAck)
                                         outputStream.flush()
@@ -339,7 +359,6 @@ class HttpKuVpnService : VpnService() {
                                         try {
                                             val input = socket.getInputStream()
                                             val resBuffer = ByteArray(4096)
-                                            var serverSeq = 1001L
                                             while (isRunning && !socket.isClosed) {
                                                 val r = input.read(resBuffer)
                                                 if (r <= 0) break
@@ -348,15 +367,27 @@ class HttpKuVpnService : VpnService() {
                                                 val dataPacket = buildTcpPacket(
                                                     srcIp = dstIpBytes, dstIp = srcIpBytes,
                                                     srcPort = destPort, dstPort = srcPort,
-                                                    seqNum = serverSeq, ackNum = session.clientSeq,
+                                                    seqNum = session.serverSeq, ackNum = session.clientSeq,
                                                     flags = 0x18,
                                                     payload = chunk
                                                 )
-                                                serverSeq += r
+                                                session.serverSeq += r
                                                 synchronized(outputStream) {
                                                     outputStream.write(dataPacket)
                                                     outputStream.flush()
                                                 }
+                                            }
+
+                                            val finPacket = buildTcpPacket(
+                                                srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                                srcPort = destPort, dstPort = srcPort,
+                                                seqNum = session.serverSeq, ackNum = session.clientSeq,
+                                                flags = 0x11
+                                            )
+                                            session.serverSeq += 1L
+                                            synchronized(outputStream) {
+                                                outputStream.write(finPacket)
+                                                outputStream.flush()
                                             }
                                         } catch (_: Exception) {} finally {
                                             tcpSessions.remove(sessionKey)
@@ -367,7 +398,23 @@ class HttpKuVpnService : VpnService() {
                             }
                         } else if (isFin || isRst) {
                             val session = tcpSessions.remove(sessionKey)
-                            try { session?.socket?.close() } catch (_: Exception) {}
+                            if (session != null) {
+                                if (isFin) {
+                                    val finAck = buildTcpPacket(
+                                        srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                        srcPort = destPort, dstPort = srcPort,
+                                        seqNum = session.serverSeq, ackNum = clientIsn + 1L,
+                                        flags = 0x11
+                                    )
+                                    synchronized(outputStream) {
+                                        try {
+                                            outputStream.write(finAck)
+                                            outputStream.flush()
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+                                try { session.socket.close() } catch (_: Exception) {}
+                            }
                         } else if (payloadLen > 0) {
                             val session = tcpSessions[sessionKey]
                             if (session != null) {
@@ -378,11 +425,10 @@ class HttpKuVpnService : VpnService() {
                                     try {
                                         session.socket.getOutputStream().write(payload)
                                         session.socket.getOutputStream().flush()
-                                        // Send ACK back to client
                                         val ackPacket = buildTcpPacket(
                                             srcIp = dstIpBytes, dstIp = srcIpBytes,
                                             srcPort = destPort, dstPort = srcPort,
-                                            seqNum = 1001L, ackNum = session.clientSeq,
+                                            seqNum = session.serverSeq, ackNum = session.clientSeq,
                                             flags = 0x10
                                         )
                                         synchronized(outputStream) {

@@ -236,15 +236,15 @@ class MainActivity : AppCompatActivity() {
         val showHaproxy = type == TunnelType.HAPROXY
 
         binding.tilHttpAddr.visibility = if (showHttp || showSsl || showSocks || showHaproxy) View.VISIBLE else View.GONE
-        binding.tilHttpPort.visibility = if (showHttp || showSocks || showHaproxy) View.VISIBLE else View.GONE
+        binding.tilHttpPort.visibility = if (showHttp || showSsl || showSocks || showHaproxy) View.VISIBLE else View.GONE
         binding.tilDnsServer.visibility = if (showDns) View.VISIBLE else View.GONE
 
         binding.containerProxyAuth.visibility = if (showHttp || showSocks) View.VISIBLE else View.GONE
-        binding.containerReplaceResponse.visibility = if (showHttp) View.VISIBLE else View.GONE
-        binding.tilCustomResponse.visibility = if (showHttp && binding.switchReplaceResponse.isChecked) View.VISIBLE else View.GONE
-        binding.containerCustomPayload.visibility = if (showHttp) View.VISIBLE else View.GONE
-        binding.tilPayload.visibility = if (showHttp && binding.switchCustomPayload.isChecked) View.VISIBLE else View.GONE
-        binding.containerGenerators.visibility = if (showHttp) View.VISIBLE else View.GONE
+        binding.containerReplaceResponse.visibility = if (showHttp || showSsl) View.VISIBLE else View.GONE
+        binding.tilCustomResponse.visibility = if ((showHttp || showSsl) && binding.switchReplaceResponse.isChecked) View.VISIBLE else View.GONE
+        binding.containerCustomPayload.visibility = if (showHttp || showSsl) View.VISIBLE else View.GONE
+        binding.tilPayload.visibility = if ((showHttp || showSsl) && binding.switchCustomPayload.isChecked) View.VISIBLE else View.GONE
+        binding.containerGenerators.visibility = if (showHttp || showSsl) View.VISIBLE else View.GONE
     }
 
     private fun updateEngineConfigFromFields() {

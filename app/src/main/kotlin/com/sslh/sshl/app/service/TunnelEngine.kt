@@ -269,6 +269,15 @@ class TunnelEngine {
         }
     }
 
+    private fun readFully(input: InputStream, buffer: ByteArray) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val bytesRead = input.read(buffer, offset, buffer.size - offset)
+            if (bytesRead == -1) throw java.io.EOFException("Premature EOF reading SOCKS request")
+            offset += bytesRead
+        }
+    }
+
     private fun handleSocksClient(client: Socket) {
         try {
             client.soTimeout = 30000
@@ -287,7 +296,7 @@ class TunnelEngine {
                 return
             }
             val methods = ByteArray(numMethods)
-            input.read(methods)
+            readFully(input, methods)
 
             output.write(byteArrayOf(0x05, 0x00))
             output.flush()
@@ -307,18 +316,19 @@ class TunnelEngine {
             val targetHost: String = when (atyp) {
                 1 -> {
                     val addr = ByteArray(4)
-                    input.read(addr)
+                    readFully(input, addr)
                     InetAddress.getByAddress(addr).hostAddress ?: "127.0.0.1"
                 }
                 3 -> {
                     val len = input.read()
+                    if (len <= 0) { client.close(); return }
                     val hostBytes = ByteArray(len)
-                    input.read(hostBytes)
+                    readFully(input, hostBytes)
                     String(hostBytes, Charsets.US_ASCII)
                 }
                 4 -> {
                     val addr = ByteArray(16)
-                    input.read(addr)
+                    readFully(input, addr)
                     InetAddress.getByAddress(addr).hostAddress ?: "::1"
                 }
                 else -> {
@@ -496,7 +506,7 @@ class CustomPayloadProxy(
 
     override fun connect(socketFactory: SocketFactory?, host: String, port: Int, timeout: Int) {
         val proxyHost = if (config.httpAddr.isNotBlank()) config.httpAddr else host
-        val proxyPort = if (config.type == TunnelType.HTTP || config.type == TunnelType.SOCKS) config.httpPort else config.remotePort
+        val proxyPort = if (config.type == TunnelType.HTTP || config.type == TunnelType.SOCKS || config.type == TunnelType.HAPROXY) config.httpPort else config.remotePort
 
         logAction("Connecting to proxy/bug host $proxyHost:$proxyPort...")
 
@@ -507,6 +517,47 @@ class CustomPayloadProxy(
 
         HttpKuVpnService.instance?.protectSocket(rawSocket)
         rawSocket.connect(InetSocketAddress(proxyHost, proxyPort), timeout)
+
+        if (config.type == TunnelType.SOCKS) {
+            logAction("Performing SOCKS5 proxy handshake for $host:$port...")
+            val outS = rawSocket.getOutputStream()
+            val inS = rawSocket.getInputStream()
+            outS.write(byteArrayOf(0x05, 0x01, 0x00))
+            outS.flush()
+
+            val sVer = inS.read()
+            val sMethod = inS.read()
+            if (sVer != 5 || sMethod != 0) {
+                rawSocket.close()
+                throw java.io.IOException("SOCKS5 proxy authentication failed or unsupported")
+            }
+
+            val hostBytes = host.toByteArray(Charsets.US_ASCII)
+            val req = ByteArray(7 + hostBytes.size)
+            req[0] = 0x05
+            req[1] = 0x01
+            req[2] = 0x00
+            req[3] = 0x03
+            req[4] = hostBytes.size.toByte()
+            System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
+            req[5 + hostBytes.size] = (port ushr 8).toByte()
+            req[6 + hostBytes.size] = (port and 0xFF).toByte()
+            outS.write(req)
+            outS.flush()
+
+            val respBuf = ByteArray(10)
+            var readLen = 0
+            while (readLen < 10) {
+                val r = inS.read(respBuf, readLen, 10 - readLen)
+                if (r < 0) break
+                readLen += r
+            }
+            if (readLen < 4 || respBuf[1].toInt() != 0) {
+                rawSocket.close()
+                throw java.io.IOException("SOCKS5 proxy failed to connect to target $host:$port")
+            }
+            logAction("SOCKS5 proxy connected successfully.")
+        }
 
         if (config.type == TunnelType.SSL) {
             val sslContext = SSLContext.getInstance("TLS")
@@ -537,7 +588,9 @@ class CustomPayloadProxy(
             logAction("Sent HAProxy PROXY header")
         }
 
-        if (config.type == TunnelType.HTTP && config.customPayload && config.payload.isNotEmpty()) {
+        val shouldInjectPayload = (config.type == TunnelType.HTTP || config.type == TunnelType.SSL) && config.customPayload && config.payload.isNotEmpty()
+
+        if (shouldInjectPayload) {
             val parsedPayload = PayloadGenerator.parsePayload(
                 config.payload,
                 host = host,
@@ -545,11 +598,48 @@ class CustomPayloadProxy(
                 statusLine = config.customHttpResponse
             )
             logAction("Injecting payload:\n$parsedPayload")
-            out.write(parsedPayload.toByteArray(Charsets.US_ASCII))
-            out.flush()
+
+            if (parsedPayload.contains("[split]")) {
+                val parts = parsedPayload.split("[split]")
+                for (i in parts.indices) {
+                    val part = parts[i]
+                    if (part.isNotEmpty()) {
+                        out.write(part.toByteArray(Charsets.US_ASCII))
+                        out.flush()
+                    }
+                    if (i < parts.size - 1) {
+                        Thread.sleep(50)
+                    }
+                }
+            } else {
+                out.write(parsedPayload.toByteArray(Charsets.US_ASCII))
+                out.flush()
+            }
 
             val firstLine = readLine(inStream)
-            logAction("HTTP Proxy Response: $firstLine")
+            val displayLine = if (config.replaceHttpResponse && config.customHttpResponse.isNotBlank()) {
+                config.customHttpResponse
+            } else {
+                firstLine
+            }
+            logAction("HTTP Proxy Response: $displayLine")
+            if (firstLine.isNotBlank()) {
+                while (true) {
+                    val line = readLine(inStream)
+                    if (line.isEmpty()) break
+                }
+            }
+        } else if (config.type == TunnelType.HTTP && !config.customPayload) {
+            val defaultConnect = "CONNECT $host:$port HTTP/1.1\r\nHost: $host:$port\r\n\r\n"
+            out.write(defaultConnect.toByteArray(Charsets.US_ASCII))
+            out.flush()
+            val firstLine = readLine(inStream)
+            val displayLine = if (config.replaceHttpResponse && config.customHttpResponse.isNotBlank()) {
+                config.customHttpResponse
+            } else {
+                firstLine
+            }
+            logAction("HTTP Proxy Response: $displayLine")
             if (firstLine.isNotBlank()) {
                 while (true) {
                     val line = readLine(inStream)
