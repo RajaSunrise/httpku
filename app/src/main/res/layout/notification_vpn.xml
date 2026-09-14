@@ -25,7 +25,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:text="SSLH/SSHL"
+            android:text="HttpKu"
             android:textColor="#B0BEC5"
             android:textSize="13sp"
             android:textStyle="bold" />
@@ -52,7 +52,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="SSLH/SSHL: default"
+        android:text="HttpKu: default"
         android:textColor="#FFFFFF"
         android:textSize="15sp"
         android:textStyle="bold" />

@@ -273,9 +273,16 @@ class TunnelEngine {
                 val session = jsch.getSession(user, config.remoteAddr, config.remotePort)
                 session.setPassword(config.remotePassword)
                 session.setConfig("StrictHostKeyChecking", "no")
+                session.setConfig("PreferredAuthentications", "password,keyboard-interactive,publickey")
+                session.setTimeout(0)
+                session.setServerAliveInterval(15000)
+                session.setServerAliveCountMax(3)
+
                 session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
                     override fun createSocket(host: String, port: Int): Socket {
                         val s = Socket()
+                        s.tcpNoDelay = true
+                        s.soTimeout = 0
                         var vpn = HttpKuVpnService.instance
                         var retries = 0
                         while (vpn == null && retries < 20) {
@@ -284,13 +291,13 @@ class TunnelEngine {
                             retries++
                         }
                         vpn?.protectSocket(s)
-                        s.connect(java.net.InetSocketAddress(host, port), 10000)
+                        s.connect(java.net.InetSocketAddress(host, port), 8000)
                         return s
                     }
                     override fun getInputStream(socket: Socket): java.io.InputStream = socket.getInputStream()
                     override fun getOutputStream(socket: Socket): java.io.OutputStream = socket.getOutputStream()
                 })
-                session.connect(10000)
+                session.connect(15000)
                 jschSession = session
             } catch (sshEx: Exception) {
                 addLog("SSH Warning: ${sshEx.message}")
