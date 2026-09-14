@@ -14,6 +14,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import kotlin.concurrent.thread
 
 class HttpKuVpnService : VpnService() {
@@ -124,6 +126,7 @@ class HttpKuVpnService : VpnService() {
     @Volatile
     private var isRunning = false
     private var vpnThread: Thread? = null
+    private var dnsExecutor: ExecutorService? = null
 
     private fun setupVpnInterface() {
         try {
@@ -157,6 +160,7 @@ class HttpKuVpnService : VpnService() {
 
     private fun startPacketLoop() {
         isRunning = true
+        dnsExecutor = Executors.newFixedThreadPool(4)
         vpnThread = kotlin.concurrent.thread(start = true, name = "HttpKuVpnPacketThread") {
             val pfd = vpnInterface ?: return@thread
             val inputStream = java.io.FileInputStream(pfd.fileDescriptor)
@@ -181,16 +185,19 @@ class HttpKuVpnService : VpnService() {
                             val dnsDataLen = read - dnsDataOffset
 
                             if (dnsDataLen > 0) {
-                                thread {
+                                val packetCopy = ByteArray(read)
+                                System.arraycopy(buffer, 0, packetCopy, 0, read)
+                                dnsExecutor?.execute {
                                     try {
                                         val dnsQuery = ByteArray(dnsDataLen)
-                                        System.arraycopy(buffer, dnsDataOffset, dnsQuery, 0, dnsDataLen)
+                                        System.arraycopy(packetCopy, dnsDataOffset, dnsQuery, 0, dnsDataLen)
 
                                         val datagramSocket = java.net.DatagramSocket()
                                         protect(datagramSocket)
                                         datagramSocket.soTimeout = 3000
 
-                                        val dnsServerAddr = java.net.InetAddress.getByName("1.1.1.1")
+                                        val customDns = tunnelEngine?.config?.dnsServer?.takeIf { it.isNotBlank() } ?: "1.1.1.1"
+                                        val dnsServerAddr = java.net.InetAddress.getByName(customDns)
                                         val packet = java.net.DatagramPacket(dnsQuery, dnsQuery.size, dnsServerAddr, 53)
                                         datagramSocket.send(packet)
 
@@ -204,15 +211,15 @@ class HttpKuVpnService : VpnService() {
                                         val respPacket = ByteArray(ipHeaderLen + udpHeaderLen + respDnsLen)
 
                                         // Swap IP src and dst
-                                        System.arraycopy(buffer, 0, respPacket, 0, ipHeaderLen)
-                                        System.arraycopy(buffer, 12, respPacket, 16, 4) // dst -> src
-                                        System.arraycopy(buffer, 16, respPacket, 12, 4) // src -> dst
+                                        System.arraycopy(packetCopy, 0, respPacket, 0, ipHeaderLen)
+                                        System.arraycopy(packetCopy, 12, respPacket, 16, 4) // dst -> src
+                                        System.arraycopy(packetCopy, 16, respPacket, 12, 4) // src -> dst
 
                                         // UDP ports swap
-                                        respPacket[ipHeaderLen] = buffer[22]
-                                        respPacket[ipHeaderLen + 1] = buffer[23]
-                                        respPacket[ipHeaderLen + 2] = buffer[20]
-                                        respPacket[ipHeaderLen + 3] = buffer[21]
+                                        respPacket[ipHeaderLen] = packetCopy[22]
+                                        respPacket[ipHeaderLen + 1] = packetCopy[23]
+                                        respPacket[ipHeaderLen + 2] = packetCopy[20]
+                                        respPacket[ipHeaderLen + 3] = packetCopy[21]
 
                                         val udpLen = udpHeaderLen + respDnsLen
                                         respPacket[ipHeaderLen + 4] = (udpLen shr 8).toByte()
@@ -243,6 +250,10 @@ class HttpKuVpnService : VpnService() {
         timerHandler?.removeCallbacksAndMessages(null)
         timerHandler = null
         timerRunnable = null
+        try {
+            dnsExecutor?.shutdownNow()
+        } catch (_: Exception) {}
+        dnsExecutor = null
         vpnThread?.interrupt()
         vpnThread = null
         try {
