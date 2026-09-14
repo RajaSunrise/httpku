@@ -57,7 +57,8 @@ class TunnelEngine {
         listeners.remove(l)
     }
 
-    private var jschSession: Session? = null
+    var jschSession: Session? = null
+        private set
     private var localProxyServer: ServerSocket? = null
     @Volatile
     private var isRunning = false
@@ -282,7 +283,8 @@ class TunnelEngine {
                     override fun createSocket(host: String, port: Int): Socket {
                         val s = Socket()
                         s.tcpNoDelay = true
-                        s.soTimeout = 0
+                        s.keepAlive = true
+                        s.soTimeout = 30000
                         var vpn = HttpKuVpnService.instance
                         var retries = 0
                         while (vpn == null && retries < 20) {
@@ -291,7 +293,8 @@ class TunnelEngine {
                             retries++
                         }
                         vpn?.protectSocket(s)
-                        s.connect(java.net.InetSocketAddress(host, port), 8000)
+                        s.connect(java.net.InetSocketAddress(host, port), 15000)
+                        s.soTimeout = 30000
                         return s
                     }
                     override fun getInputStream(socket: Socket): java.io.InputStream = socket.getInputStream()
@@ -299,6 +302,13 @@ class TunnelEngine {
                 })
                 session.connect(15000)
                 jschSession = session
+                // Setup SOCKS dynamic forward for VPN tunneling (real internet via SSH)
+                try {
+                    session.setPortForwardingD("127.0.0.1", 1080)
+                    addLog("SOCKS tunnel bound 127.0.0.1:1080")
+                } catch (e: Exception) {
+                    addLog("SOCKS forward warning: ${e.message}")
+                }
             } catch (sshEx: Exception) {
                 addLog("SSH Warning: ${sshEx.message}")
                 addLog("Tunnel engine running in direct proxy mode.")

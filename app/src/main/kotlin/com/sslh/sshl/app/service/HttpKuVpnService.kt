@@ -214,7 +214,7 @@ class HttpKuVpnService : VpnService() {
 
                                     val datagramSocket = java.net.DatagramSocket()
                                     protect(datagramSocket)
-                                    datagramSocket.soTimeout = 3000
+                                    datagramSocket.soTimeout = 10000
 
                                     val packet = java.net.DatagramPacket(udpPayload, udpPayload.size, targetAddr, targetPort)
                                     datagramSocket.send(packet)
@@ -279,14 +279,27 @@ class HttpKuVpnService : VpnService() {
                             netExecutor?.execute {
                                 try {
                                     val destAddress = java.net.InetAddress.getByAddress(dstIpBytes)
-                                    val socket = java.net.Socket()
-                                    protect(socket)
-
-                                    socket.tcpNoDelay = true
-                                    socket.soTimeout = 0
+                                    val useSocks = tunnelEngine?.status == com.sslh.sshl.app.model.TunnelStatus.CONNECTED && tunnelEngine?.jschSession?.isConnected == true
+                                    val socket: java.net.Socket = if (useSocks) {
+                                        // Route through SSH SOCKS 127.0.0.1:1080
+                                        val s = java.net.Socket(java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", 1080)))
+                                        protect(s)
+                                        s.tcpNoDelay = true
+                                        s.keepAlive = true
+                                        s.soTimeout = 30000
+                                        s
+                                    } else {
+                                        val s = java.net.Socket()
+                                        protect(s)
+                                        s.tcpNoDelay = true
+                                        s.keepAlive = true
+                                        s.soTimeout = 30000
+                                        s
+                                    }
                                     var connected = false
                                     try {
-                                        socket.connect(java.net.InetSocketAddress(destAddress, destPort), 5000)
+                                        if (useSocks) socket.connect(java.net.InetSocketAddress(destAddress, destPort), 15000)
+                                        else socket.connect(java.net.InetSocketAddress(destAddress, destPort), 15000)
                                         connected = true
                                     } catch (_: Exception) {
                                         connected = false
@@ -365,8 +378,25 @@ class HttpKuVpnService : VpnService() {
                                     try {
                                         session.socket.getOutputStream().write(payload)
                                         session.socket.getOutputStream().flush()
+                                        // Send ACK back to client
+                                        val ackPacket = buildTcpPacket(
+                                            srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                            srcPort = destPort, dstPort = srcPort,
+                                            seqNum = 1001L, ackNum = session.clientSeq,
+                                            flags = 0x10
+                                        )
+                                        synchronized(outputStream) {
+                                            outputStream.write(ackPacket)
+                                            outputStream.flush()
+                                        }
                                     } catch (_: Exception) {}
                                 }
+                            }
+                        } else {
+                            // Pure ACK - keepalive, no payload
+                            val session = tcpSessions[sessionKey]
+                            if (session != null) {
+                                session.clientSeq = clientIsn
                             }
                         }
                     }
@@ -554,9 +584,9 @@ class HttpKuVpnService : VpnService() {
         val elapsed = System.currentTimeMillis() - startTimeMillis
         val uptimeStr = formatUptime(elapsed)
 
-        val titleText = "HttpKu: default"
+        val titleText = "HttpKu: ${tunnelEngine?.config?.remoteAddr?.takeIf { it.isNotBlank() } ?: "default"}"
         val statusText = when (tunnelEngine?.status) {
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "VPN connected"
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "VPN connected • Tap to open"
             com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "Waiting for network..."
             com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "Connecting..."
             else -> "VPN connected"
