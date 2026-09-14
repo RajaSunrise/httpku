@@ -282,9 +282,11 @@ class HttpKuVpnService : VpnService() {
                                     val socket = java.net.Socket()
                                     protect(socket)
 
+                                    socket.tcpNoDelay = true
+                                    socket.soTimeout = 0
                                     var connected = false
                                     try {
-                                        socket.connect(java.net.InetSocketAddress(destAddress, destPort), 6000)
+                                        socket.connect(java.net.InetSocketAddress(destAddress, destPort), 5000)
                                         connected = true
                                     } catch (_: Exception) {
                                         connected = false
@@ -528,7 +530,7 @@ class HttpKuVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "HttpKu VPN Service",
+                "HttpKu",
                 NotificationManager.IMPORTANCE_HIGH
             )
             val manager = getSystemService(NotificationManager::class.java)
@@ -552,7 +554,7 @@ class HttpKuVpnService : VpnService() {
         val elapsed = System.currentTimeMillis() - startTimeMillis
         val uptimeStr = formatUptime(elapsed)
 
-        val titleText = "SSLH/SSHL: default"
+        val titleText = "HttpKu: default"
         val statusText = when (tunnelEngine?.status) {
             com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "VPN connected"
             com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "Waiting for network..."
@@ -567,7 +569,7 @@ class HttpKuVpnService : VpnService() {
         val restartPendingIntent = PendingIntent.getService(this, 2, restartIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         val remoteViews = android.widget.RemoteViews(packageName, com.sslh.sshl.app.R.layout.notification_vpn).apply {
-            setTextViewText(com.sslh.sshl.app.R.id.tvNotifHeader, "SSLH/SSHL")
+            setTextViewText(com.sslh.sshl.app.R.id.tvNotifHeader, "HttpKu")
             setTextViewText(com.sslh.sshl.app.R.id.tvNotifUptime, uptimeStr)
             setTextViewText(com.sslh.sshl.app.R.id.tvNotifTitle, titleText)
             setTextViewText(com.sslh.sshl.app.R.id.tvNotifStatus, statusText)
@@ -577,6 +579,8 @@ class HttpKuVpnService : VpnService() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentTitle("HttpKu")
+            .setContentText(statusText)
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .setStyle(NotificationCompat.DecoratedCustomViewStyle())
