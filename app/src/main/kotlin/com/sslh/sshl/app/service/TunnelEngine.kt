@@ -1,7 +1,10 @@
 package com.sslh.sshl.app.service
 
+import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
+import com.jcraft.jsch.Proxy
 import com.jcraft.jsch.Session
+import com.jcraft.jsch.SocketFactory
 import com.sslh.sshl.app.model.LogEntry
 import com.sslh.sshl.app.model.TunnelConfig
 import com.sslh.sshl.app.model.TunnelStatus
@@ -9,19 +12,24 @@ import com.sslh.sshl.app.model.TunnelType
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
-import java.util.concurrent.Executors
-import java.util.concurrent.ExecutorService
 import kotlin.concurrent.thread
 
 class TunnelEngine {
     companion object {
         private const val MAX_LOG_SIZE = 500
+        const val SOCKS_PORT = 1080
+        const val HTTP_PROXY_PORT = 7900
     }
 
     var config: TunnelConfig = TunnelConfig()
@@ -59,7 +67,9 @@ class TunnelEngine {
 
     var jschSession: Session? = null
         private set
-    private var localProxyServer: ServerSocket? = null
+    private var socksServerSocket: ServerSocket? = null
+    private var httpProxyServerSocket: ServerSocket? = null
+
     @Volatile
     private var isRunning = false
     @Volatile
@@ -141,28 +151,11 @@ class TunnelEngine {
         isRunning = true
         notifyListener()
 
-        addLog("Starting")
-        addLog("VPN is prepared.")
-        addLog("Connecting SSH...")
+        addLog("Starting tunnel...")
+        addLog("Mode: ${config.type.name}")
 
         thread {
             try {
-                if (config.replaceHttpResponse) {
-                    addLog("Replace Response: ${config.customHttpResponse}")
-                }
-
-                addLog("Server: SSH-2.0-dropbear_2020.81")
-                addLog("Client: SSH-2.0-TrileadSSH2Java_213")
-                addLog("ServerHostKeyAlgorithm:")
-                addLog("ssh-ed25519")
-                addLog("HexFingerprint:\n7c:8c:f7:e7:19:f5:95:6c:fb:bf:6c:ad:74:e8:25:67")
-                addLog("Authenticating SSH...")
-                addLog("Jagoan Group")
-
-                if (config.remotePassword.isNotEmpty()) {
-                    addLog("Authenticating with Password...")
-                }
-
                 when (config.type) {
                     TunnelType.DNS -> {
                         addLog("DNS Server: ${config.dnsServer}:${config.dnsPort}")
@@ -177,7 +170,7 @@ class TunnelEngine {
                         addLog("HAProxy mode enabled: Prepending PROXY TCP4 header")
                     }
                     TunnelType.SOCKS -> {
-                        addLog("SOCKS mode enabled: Direct SOCKS proxy channel initialized")
+                        addLog("SOCKS proxy mode enabled: ${config.httpAddr}:${config.httpPort}")
                     }
                     else -> {}
                 }
@@ -185,13 +178,9 @@ class TunnelEngine {
                 connectTunnelInternal()
 
                 status = TunnelStatus.CONNECTED
-                addLog("Authenticated.", isHighlight = true)
-                addLog("ping latency: 58 ms")
-                addLog("Using available port: 7900")
-                addLog("disallowed apps: [HttpKu]")
-                addLog("starting VPN...")
-                addLog("DNS 1: ${config.dnsServer}")
-                addLog("DNS 2: 1.0.0.1")
+                addLog("SSH Authenticated successfully.", isHighlight = true)
+                addLog("SOCKS5 tunnel running at 127.0.0.1:$SOCKS_PORT", isHighlight = true)
+                addLog("Local HTTP proxy running at 127.0.0.1:$HTTP_PROXY_PORT")
                 addLog("VPN connected", isSuccess = true)
 
                 if (config.detectIpv4) {
@@ -201,175 +190,255 @@ class TunnelEngine {
                 notifyListener()
             } catch (e: Exception) {
                 addLog("Connection failed: ${e.message}", isError = true)
-                stopTunnel()
+                stopTunnelInternal(clearAutoReconnect = true)
             }
         }
     }
 
     private fun connectTunnelInternal() {
-        val targetHost = if (config.remoteAddr.isNotBlank()) config.remoteAddr else config.httpAddr
-        val host = if (config.type == TunnelType.HTTP || config.type == TunnelType.SSL) {
-            if (config.httpAddr.isNotBlank()) config.httpAddr else targetHost
-        } else {
-            targetHost
-        }
-        val port = if (config.type == TunnelType.HTTP) config.httpPort else config.remotePort
-
-        if (host.isNotBlank()) {
-            try {
-                val socket: Socket = when (config.type) {
-                    TunnelType.SSL -> {
-                        val sslContext = SSLContext.getInstance("TLS")
-                        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-                            override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-                            override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-                            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
-                        })
-                        sslContext.init(null, trustAllCerts, java.security.SecureRandom())
-                        val sslFactory: SSLSocketFactory = sslContext.socketFactory
-                        val s = Socket()
-                        HttpKuVpnService.instance?.protectSocket(s)
-                        s.connect(java.net.InetSocketAddress(host, port), 5000)
-                        sslFactory.createSocket(s, host, port, true)
-                    }
-                    else -> {
-                        val s = Socket()
-                        HttpKuVpnService.instance?.protectSocket(s)
-                        s.connect(java.net.InetSocketAddress(host, port), 5000)
-                        s
-                    }
-                }
-
-                if (config.type == TunnelType.HAPROXY) {
-                    val proxyHeader = "PROXY TCP4 127.0.0.1 ${if (config.remoteAddr.isNotBlank()) config.remoteAddr else "127.0.0.1"} 12345 $port\r\n"
-                    socket.getOutputStream().write(proxyHeader.toByteArray(Charsets.US_ASCII))
-                    socket.getOutputStream().flush()
-                }
-
-                if (config.type == TunnelType.HTTP && config.customPayload && config.payload.isNotEmpty()) {
-                    val parsedPayload = PayloadGenerator.parsePayload(
-                        config.payload,
-                        host = if (config.remoteAddr.isNotBlank()) config.remoteAddr else host,
-                        port = config.remotePort,
-                        statusLine = config.customHttpResponse
-                    )
-                    addLog("Sending payload:\n$parsedPayload")
-                    val os = socket.getOutputStream()
-                    os.write(parsedPayload.toByteArray(Charsets.US_ASCII))
-                    os.flush()
-                }
-            } catch (e: Exception) {
-                addLog("Socket Connection warning: ${e.message}")
-                addLog("Tunnel engine running in fallback mode.")
-            }
-        } else {
-            addLog("No remote address specified. Running in fallback mode.")
-        }
-
-        // Establish SSH session over connection if credentials provided
         if (config.remoteAddr.isNotBlank()) {
-            try {
-                val jsch = JSch()
-                val user = if (config.remoteUsername.isEmpty()) "root" else config.remoteUsername
-                val session = jsch.getSession(user, config.remoteAddr, config.remotePort)
-                session.setPassword(config.remotePassword)
-                session.setConfig("StrictHostKeyChecking", "no")
-                session.setConfig("PreferredAuthentications", "password,keyboard-interactive,publickey")
-                session.setTimeout(0)
-                session.setServerAliveInterval(15000)
-                session.setServerAliveCountMax(3)
+            val jsch = JSch()
+            val user = if (config.remoteUsername.isEmpty()) "root" else config.remoteUsername
+            val session = jsch.getSession(user, config.remoteAddr, config.remotePort)
+            session.setPassword(config.remotePassword)
+            session.setConfig("StrictHostKeyChecking", "no")
+            session.setConfig("PreferredAuthentications", "password,keyboard-interactive,publickey")
+            session.setTimeout(15000)
+            session.setServerAliveInterval(15000)
+            session.setServerAliveCountMax(3)
 
-                session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
+            val needProxy = (config.type == TunnelType.HTTP || config.type == TunnelType.SSL ||
+                    config.type == TunnelType.HAPROXY || config.type == TunnelType.SOCKS) && config.httpAddr.isNotBlank()
+
+            if (needProxy) {
+                session.setProxy(CustomPayloadProxy(config, ::addLog))
+            } else {
+                session.setSocketFactory(object : SocketFactory {
                     override fun createSocket(host: String, port: Int): Socket {
                         val s = Socket()
                         s.tcpNoDelay = true
                         s.keepAlive = true
                         s.soTimeout = 30000
-                        var vpn = HttpKuVpnService.instance
-                        var retries = 0
-                        while (vpn == null && retries < 20) {
-                            Thread.sleep(50)
-                            vpn = HttpKuVpnService.instance
-                            retries++
-                        }
-                        vpn?.protectSocket(s)
-                        s.connect(java.net.InetSocketAddress(host, port), 15000)
-                        s.soTimeout = 30000
+                        HttpKuVpnService.instance?.protectSocket(s)
+                        s.connect(InetSocketAddress(host, port), 15000)
                         return s
                     }
-                    override fun getInputStream(socket: Socket): java.io.InputStream = socket.getInputStream()
-                    override fun getOutputStream(socket: Socket): java.io.OutputStream = socket.getOutputStream()
+
+                    override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
+                    override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
                 })
-                session.connect(15000)
-                jschSession = session
-                // Setup SOCKS dynamic forward for VPN tunneling (real internet via SSH)
-                try {
-                    session.setPortForwardingD("127.0.0.1", 1080)
-                    addLog("SOCKS tunnel bound 127.0.0.1:1080")
-                } catch (e: Exception) {
-                    addLog("SOCKS forward warning: ${e.message}")
-                }
-            } catch (sshEx: Exception) {
-                addLog("SSH Warning: ${sshEx.message}")
-                addLog("Tunnel engine running in direct proxy mode.")
             }
+
+            addLog("Connecting SSH to ${config.remoteAddr}:${config.remotePort}...")
+            session.connect(15000)
+            jschSession = session
+        } else {
+            addLog("No remote address specified. Running in standalone proxy mode.")
         }
 
-        // Bind local proxy port cleanly
+        startLocalSocksServer()
+        startLocalHttpProxyServer()
+    }
+
+    private fun startLocalSocksServer() {
         try {
-            localProxyServer?.close()
+            socksServerSocket?.close()
         } catch (_: Exception) {}
-        localProxyServer = null
 
-        try {
-            proxyExecutor?.shutdownNow()
-        } catch (_: Exception) {}
-        proxyExecutor = Executors.newCachedThreadPool()
+        if (proxyExecutor == null || proxyExecutor!!.isShutdown) {
+            proxyExecutor = Executors.newCachedThreadPool()
+        }
 
-        try {
-            val serverSocket = ServerSocket()
-            serverSocket.reuseAddress = true
-            serverSocket.bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), 7900))
-            localProxyServer = serverSocket
+        val server = ServerSocket()
+        server.reuseAddress = true
+        server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), SOCKS_PORT))
+        socksServerSocket = server
 
-            proxyExecutor?.execute {
-                val server = localProxyServer
-                while (isRunning && server != null && !server.isClosed) {
-                    try {
-                        val clientSocket = server.accept()
-                        proxyExecutor?.execute {
-                            try {
-                                val destHost = if (config.remoteAddr.isNotBlank()) config.remoteAddr else "127.0.0.1"
-                                val destPort = config.remotePort
-                                val targetSocket = Socket()
-                                HttpKuVpnService.instance?.protectSocket(targetSocket)
-                                targetSocket.connect(java.net.InetSocketAddress(destHost, destPort), 5000)
-
-                                val inClient = clientSocket.getInputStream()
-                                val outClient = clientSocket.getOutputStream()
-                                val inTarget = targetSocket.getInputStream()
-                                val outTarget = targetSocket.getOutputStream()
-
-                                val t1 = thread {
-                                    try { inClient.copyTo(outTarget) } catch (_: Exception) {}
-                                }
-                                val t2 = thread {
-                                    try { inTarget.copyTo(outClient) } catch (_: Exception) {}
-                                }
-                                t1.join()
-                                t2.join()
-                            } catch (_: Exception) {
-                            } finally {
-                                try { clientSocket.close() } catch (_: Exception) {}
-                            }
-                        }
-                    } catch (_: Exception) {
-                        break
+        proxyExecutor?.execute {
+            while (isRunning && !server.isClosed) {
+                try {
+                    val client = server.accept()
+                    client.tcpNoDelay = true
+                    proxyExecutor?.execute {
+                        handleSocksClient(client)
                     }
+                } catch (_: Exception) {
+                    break
                 }
             }
-        } catch (e: Exception) {
-            addLog("Local Proxy Server warning: ${e.message}")
+        }
+    }
+
+    private fun handleSocksClient(client: Socket) {
+        try {
+            client.soTimeout = 30000
+            val input = client.getInputStream()
+            val output = client.getOutputStream()
+
+            val ver = input.read()
+            if (ver != 5) {
+                client.close()
+                return
+            }
+
+            val numMethods = input.read()
+            if (numMethods <= 0) {
+                client.close()
+                return
+            }
+            val methods = ByteArray(numMethods)
+            input.read(methods)
+
+            output.write(byteArrayOf(0x05, 0x00))
+            output.flush()
+
+            val reqVer = input.read()
+            val cmd = input.read()
+            val rsv = input.read()
+            val atyp = input.read()
+
+            if (reqVer != 5 || cmd != 1) {
+                output.write(byteArrayOf(0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                output.flush()
+                client.close()
+                return
+            }
+
+            val targetHost: String = when (atyp) {
+                1 -> {
+                    val addr = ByteArray(4)
+                    input.read(addr)
+                    InetAddress.getByAddress(addr).hostAddress ?: "127.0.0.1"
+                }
+                3 -> {
+                    val len = input.read()
+                    val hostBytes = ByteArray(len)
+                    input.read(hostBytes)
+                    String(hostBytes, Charsets.US_ASCII)
+                }
+                4 -> {
+                    val addr = ByteArray(16)
+                    input.read(addr)
+                    InetAddress.getByAddress(addr).hostAddress ?: "::1"
+                }
+                else -> {
+                    client.close()
+                    return
+                }
+            }
+
+            val p1 = input.read()
+            val p2 = input.read()
+            val targetPort = (p1 shl 8) or p2
+
+            val session = jschSession
+            if (session != null && session.isConnected) {
+                val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
+                channel.setHost(targetHost)
+                channel.setPort(targetPort)
+
+                val channelIn = channel.inputStream
+                val channelOut = channel.outputStream
+
+                channel.connect(10000)
+
+                output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                output.flush()
+
+                val t1 = thread {
+                    try {
+                        input.copyTo(channelOut)
+                    } catch (_: Exception) {}
+                }
+                val t2 = thread {
+                    try {
+                        channelIn.copyTo(output)
+                    } catch (_: Exception) {}
+                }
+                t1.join()
+                t2.join()
+                channel.disconnect()
+            } else {
+                // Direct connection fallback if SSH is not active
+                val targetSocket = Socket()
+                HttpKuVpnService.instance?.protectSocket(targetSocket)
+                targetSocket.connect(InetSocketAddress(targetHost, targetPort), 10000)
+
+                output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                output.flush()
+
+                val t1 = thread {
+                    try { input.copyTo(targetSocket.getOutputStream()) } catch (_: Exception) {}
+                }
+                val t2 = thread {
+                    try { targetSocket.getInputStream().copyTo(output) } catch (_: Exception) {}
+                }
+                t1.join()
+                t2.join()
+                targetSocket.close()
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { client.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun startLocalHttpProxyServer() {
+        try {
+            httpProxyServerSocket?.close()
+        } catch (_: Exception) {}
+
+        val server = ServerSocket()
+        server.reuseAddress = true
+        server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), HTTP_PROXY_PORT))
+        httpProxyServerSocket = server
+
+        proxyExecutor?.execute {
+            while (isRunning && !server.isClosed) {
+                try {
+                    val client = server.accept()
+                    client.tcpNoDelay = true
+                    proxyExecutor?.execute {
+                        handleHttpProxyClient(client)
+                    }
+                } catch (_: Exception) {
+                    break
+                }
+            }
+        }
+    }
+
+    private fun handleHttpProxyClient(client: Socket) {
+        try {
+            val input = client.getInputStream()
+            val output = client.getOutputStream()
+
+            val session = jschSession
+            if (session != null && session.isConnected) {
+                val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
+                val destHost = if (config.remoteAddr.isNotBlank()) config.remoteAddr else "127.0.0.1"
+                channel.setHost(destHost)
+                channel.setPort(config.remotePort)
+
+                val channelIn = channel.inputStream
+                val channelOut = channel.outputStream
+                channel.connect(10000)
+
+                val t1 = thread {
+                    try { input.copyTo(channelOut) } catch (_: Exception) {}
+                }
+                val t2 = thread {
+                    try { channelIn.copyTo(output) } catch (_: Exception) {}
+                }
+                t1.join()
+                t2.join()
+                channel.disconnect()
+            } else {
+                client.close()
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { client.close() } catch (_: Exception) {}
         }
     }
 
@@ -386,14 +455,19 @@ class TunnelEngine {
         notifyListener()
 
         try {
+            socksServerSocket?.close()
+        } catch (_: Exception) {}
+        socksServerSocket = null
+
+        try {
+            httpProxyServerSocket?.close()
+        } catch (_: Exception) {}
+        httpProxyServerSocket = null
+
+        try {
             jschSession?.disconnect()
         } catch (_: Exception) {}
         jschSession = null
-
-        try {
-            localProxyServer?.close()
-        } catch (_: Exception) {}
-        localProxyServer = null
 
         try {
             proxyExecutor?.shutdownNow()
@@ -405,5 +479,112 @@ class TunnelEngine {
             addLog("VPN disconnected.")
         }
         notifyListener()
+    }
+}
+
+/**
+ * Custom JSch Proxy implementation to support Bug Host, Payload Injection, SSL/TLS with SNI, and HAProxy header.
+ */
+class CustomPayloadProxy(
+    private val config: TunnelConfig,
+    private val logAction: (String) -> Unit
+) : Proxy {
+
+    private var socket: Socket? = null
+    private var inputStream: InputStream? = null
+    private var outputStream: OutputStream? = null
+
+    override fun connect(socketFactory: SocketFactory?, host: String, port: Int, timeout: Int) {
+        val proxyHost = if (config.httpAddr.isNotBlank()) config.httpAddr else host
+        val proxyPort = if (config.type == TunnelType.HTTP || config.type == TunnelType.SOCKS) config.httpPort else config.remotePort
+
+        logAction("Connecting to proxy/bug host $proxyHost:$proxyPort...")
+
+        var rawSocket = Socket()
+        rawSocket.tcpNoDelay = true
+        rawSocket.keepAlive = true
+        rawSocket.soTimeout = timeout
+
+        HttpKuVpnService.instance?.protectSocket(rawSocket)
+        rawSocket.connect(InetSocketAddress(proxyHost, proxyPort), timeout)
+
+        if (config.type == TunnelType.SSL) {
+            val sslContext = SSLContext.getInstance("TLS")
+            val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
+                override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
+                override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+            })
+            sslContext.init(null, trustAll, java.security.SecureRandom())
+            val sslFactory: SSLSocketFactory = sslContext.socketFactory
+            val sslSocket = sslFactory.createSocket(rawSocket, proxyHost, proxyPort, true) as SSLSocket
+
+            val params = sslSocket.sslParameters
+            params.serverNames = listOf(SNIHostName(proxyHost))
+            sslSocket.sslParameters = params
+            sslSocket.startHandshake()
+            rawSocket = sslSocket
+            logAction("TLS Handshake completed with SNI: $proxyHost")
+        }
+
+        val out = rawSocket.getOutputStream()
+        val inStream = rawSocket.getInputStream()
+
+        if (config.type == TunnelType.HAPROXY) {
+            val proxyHeader = "PROXY TCP4 127.0.0.1 $host 12345 $port\r\n"
+            out.write(proxyHeader.toByteArray(Charsets.US_ASCII))
+            out.flush()
+            logAction("Sent HAProxy PROXY header")
+        }
+
+        if (config.type == TunnelType.HTTP && config.customPayload && config.payload.isNotEmpty()) {
+            val parsedPayload = PayloadGenerator.parsePayload(
+                config.payload,
+                host = host,
+                port = port,
+                statusLine = config.customHttpResponse
+            )
+            logAction("Injecting payload:\n$parsedPayload")
+            out.write(parsedPayload.toByteArray(Charsets.US_ASCII))
+            out.flush()
+
+            val firstLine = readLine(inStream)
+            logAction("HTTP Proxy Response: $firstLine")
+            if (firstLine.isNotBlank()) {
+                while (true) {
+                    val line = readLine(inStream)
+                    if (line.isEmpty()) break
+                }
+            }
+        }
+
+        this.socket = rawSocket
+        this.inputStream = inStream
+        this.outputStream = out
+    }
+
+    private fun readLine(inStream: InputStream): String {
+        val sb = StringBuilder()
+        var b: Int
+        while (inStream.read().also { b = it } != -1) {
+            if (b == '\n'.code) break
+            if (b != '\r'.code) {
+                sb.append(b.toChar())
+            }
+        }
+        return sb.toString()
+    }
+
+    override fun getInputStream(): InputStream = inputStream ?: throw IllegalStateException("Socket not connected")
+    override fun getOutputStream(): OutputStream = outputStream ?: throw IllegalStateException("Socket not connected")
+    override fun getSocket(): Socket = socket ?: throw IllegalStateException("Socket not connected")
+
+    override fun close() {
+        try {
+            socket?.close()
+        } catch (_: Exception) {}
+        socket = null
+        inputStream = null
+        outputStream = null
     }
 }
