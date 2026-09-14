@@ -15,9 +15,15 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import kotlin.concurrent.thread
 
 class TunnelEngine {
+    companion object {
+        private const val MAX_LOG_SIZE = 500
+    }
+
     var config: TunnelConfig = TunnelConfig()
         private set
 
@@ -25,6 +31,7 @@ class TunnelEngine {
         private set
 
     val logs = mutableListOf<LogEntry>()
+    private var proxyExecutor: ExecutorService? = null
     var detectedIp: String = "10.193.165.137"
         private set
 
@@ -95,6 +102,9 @@ class TunnelEngine {
         isHighlight: Boolean = false
     ) {
         synchronized(logs) {
+            if (logs.size >= MAX_LOG_SIZE) {
+                logs.removeAt(0)
+            }
             logs.add(LogEntry(message, isError = isError, isSuccess = isSuccess, isHighlight = isHighlight))
         }
         notifyListener()
@@ -276,17 +286,22 @@ class TunnelEngine {
         localProxyServer = null
 
         try {
+            proxyExecutor?.shutdownNow()
+        } catch (_: Exception) {}
+        proxyExecutor = Executors.newCachedThreadPool()
+
+        try {
             val serverSocket = ServerSocket()
             serverSocket.reuseAddress = true
             serverSocket.bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), 7900))
             localProxyServer = serverSocket
 
-            thread {
+            proxyExecutor?.execute {
                 val server = localProxyServer
                 while (isRunning && server != null && !server.isClosed) {
                     try {
                         val clientSocket = server.accept()
-                        thread {
+                        proxyExecutor?.execute {
                             try {
                                 clientSocket.close()
                             } catch (_: Exception) {}
@@ -322,6 +337,11 @@ class TunnelEngine {
             localProxyServer?.close()
         } catch (_: Exception) {}
         localProxyServer = null
+
+        try {
+            proxyExecutor?.shutdownNow()
+        } catch (_: Exception) {}
+        proxyExecutor = null
 
         if (clearAutoReconnect) {
             status = TunnelStatus.DISCONNECTED

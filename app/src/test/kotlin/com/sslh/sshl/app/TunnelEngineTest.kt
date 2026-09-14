@@ -43,6 +43,17 @@ class TunnelEngineTest {
     }
 
     @Test
+    fun testMaxLogCapping() {
+        val engine = TunnelEngine()
+        for (i in 1..600) {
+            engine.addLog("Log entry $i")
+        }
+        assertEquals(500, engine.logs.size)
+        assertEquals("Log entry 101", engine.logs.first().message)
+        assertEquals("Log entry 600", engine.logs.last().message)
+    }
+
+    @Test
     fun testStartAndStopTunnel() {
         val engine = TunnelEngine()
         engine.startTunnel()

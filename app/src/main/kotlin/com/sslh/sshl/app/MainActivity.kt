@@ -380,10 +380,24 @@ class MainActivity : AppCompatActivity() {
             val sb = StringBuilder()
             synchronized(tunnelEngine.logs) {
                 for (log in tunnelEngine.logs) {
-                    sb.append("[${log.formattedTime}] ${log.message}\n")
+                    val formattedMsg = android.text.TextUtils.htmlEncode(log.message).replace("\n", "<br/>")
+                    val timeStr = "[${log.formattedTime}]"
+                    val isConnectedMsg = log.isSuccess || log.isHighlight || log.message.contains("VPN connected", ignoreCase = true) || log.message.contains("Authenticated", ignoreCase = true)
+
+                    val colorHex = when {
+                        log.isError -> "#F44336"
+                        isConnectedMsg -> "#00BFFF" // Light Blue for connected / success
+                        else -> "#FFFFFF"
+                    }
+                    sb.append("<font color='$colorHex'>$timeStr $formattedMsg</font><br/>")
                 }
             }
-            tvLogText.text = sb.toString()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                tvLogText.text = android.text.Html.fromHtml(sb.toString(), android.text.Html.FROM_HTML_MODE_LEGACY)
+            } else {
+                @Suppress("DEPRECATION")
+                tvLogText.text = android.text.Html.fromHtml(sb.toString())
+            }
         }
 
         updateLogView()
