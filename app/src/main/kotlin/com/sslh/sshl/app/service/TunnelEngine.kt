@@ -226,12 +226,14 @@ class TunnelEngine {
                         })
                         sslContext.init(null, trustAllCerts, java.security.SecureRandom())
                         val sslFactory: SSLSocketFactory = sslContext.socketFactory
-                        val s = sslFactory.createSocket()
+                        val s = Socket()
+                        HttpKuVpnService.instance?.protectSocket(s)
                         s.connect(java.net.InetSocketAddress(host, port), 5000)
-                        s
+                        sslFactory.createSocket(s, host, port, true)
                     }
                     else -> {
                         val s = Socket()
+                        HttpKuVpnService.instance?.protectSocket(s)
                         s.connect(java.net.InetSocketAddress(host, port), 5000)
                         s
                     }
@@ -271,6 +273,16 @@ class TunnelEngine {
                 val session = jsch.getSession(user, config.remoteAddr, config.remotePort)
                 session.setPassword(config.remotePassword)
                 session.setConfig("StrictHostKeyChecking", "no")
+                session.setSocketFactory(object : com.jcraft.jsch.SocketFactory {
+                    override fun createSocket(host: String, port: Int): Socket {
+                        val s = Socket()
+                        HttpKuVpnService.instance?.protectSocket(s)
+                        s.connect(java.net.InetSocketAddress(host, port), 5000)
+                        return s
+                    }
+                    override fun getInputStream(socket: Socket): java.io.InputStream = socket.getInputStream()
+                    override fun getOutputStream(socket: Socket): java.io.OutputStream = socket.getOutputStream()
+                })
                 session.connect(5000)
                 jschSession = session
             } catch (sshEx: Exception) {
@@ -303,8 +315,29 @@ class TunnelEngine {
                         val clientSocket = server.accept()
                         proxyExecutor?.execute {
                             try {
-                                clientSocket.close()
-                            } catch (_: Exception) {}
+                                val destHost = if (config.remoteAddr.isNotBlank()) config.remoteAddr else "127.0.0.1"
+                                val destPort = config.remotePort
+                                val targetSocket = Socket()
+                                HttpKuVpnService.instance?.protectSocket(targetSocket)
+                                targetSocket.connect(java.net.InetSocketAddress(destHost, destPort), 5000)
+
+                                val inClient = clientSocket.getInputStream()
+                                val outClient = clientSocket.getOutputStream()
+                                val inTarget = targetSocket.getInputStream()
+                                val outTarget = targetSocket.getOutputStream()
+
+                                val t1 = thread {
+                                    try { inClient.copyTo(outTarget) } catch (_: Exception) {}
+                                }
+                                val t2 = thread {
+                                    try { inTarget.copyTo(outClient) } catch (_: Exception) {}
+                                }
+                                t1.join()
+                                t2.join()
+                            } catch (_: Exception) {
+                            } finally {
+                                try { clientSocket.close() } catch (_: Exception) {}
+                            }
                         }
                     } catch (_: Exception) {
                         break
