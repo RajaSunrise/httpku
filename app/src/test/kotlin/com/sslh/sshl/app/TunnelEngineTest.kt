@@ -121,4 +121,11 @@ class TunnelEngineTest {
         engine.stopTunnel()
         assertEquals(TunnelStatus.DISCONNECTED, engine.status)
     }
+
+    @Test
+    fun testVpnServiceActionConstants() {
+        assertEquals("com.sslh.sshl.app.action.START", com.sslh.sshl.app.service.HttpKuVpnService.ACTION_START)
+        assertEquals("com.sslh.sshl.app.action.STOP", com.sslh.sshl.app.service.HttpKuVpnService.ACTION_STOP)
+        assertEquals("com.sslh.sshl.app.action.RESTART", com.sslh.sshl.app.service.HttpKuVpnService.ACTION_RESTART)
+    }
 }

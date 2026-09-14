@@ -126,7 +126,19 @@ class HttpKuVpnService : VpnService() {
     @Volatile
     private var isRunning = false
     private var vpnThread: Thread? = null
-    private var dnsExecutor: ExecutorService? = null
+    private var netExecutor: ExecutorService? = null
+    private val tcpSessions = java.util.concurrent.ConcurrentHashMap<String, TcpSession>()
+
+    private class TcpSession(
+        val socket: java.net.Socket,
+        val srcIp: ByteArray,
+        val dstIp: ByteArray,
+        val srcPort: Int,
+        val dstPort: Int
+    ) {
+        @Volatile
+        var clientSeq: Long = 1L
+    }
 
     private fun setupVpnInterface() {
         try {
@@ -160,7 +172,7 @@ class HttpKuVpnService : VpnService() {
 
     private fun startPacketLoop() {
         isRunning = true
-        dnsExecutor = Executors.newFixedThreadPool(4)
+        netExecutor = Executors.newFixedThreadPool(8)
         vpnThread = kotlin.concurrent.thread(start = true, name = "HttpKuVpnPacketThread") {
             val pfd = vpnInterface ?: return@thread
             val inputStream = java.io.FileInputStream(pfd.fileDescriptor)
@@ -170,69 +182,165 @@ class HttpKuVpnService : VpnService() {
             try {
                 while (isRunning && !Thread.currentThread().isInterrupted) {
                     val read = inputStream.read(buffer)
-                    if (read <= 0) {
+                    if (read < 20) {
                         Thread.sleep(10)
                         continue
                     }
 
-                    // Process IP packet: intercept DNS UDP (port 53) & relay TCP/IP traffic
-                    if (read >= 28 && buffer[9].toInt() == 17) { // UDP packet
-                        val destPort = ((buffer[22].toInt() and 0xFF) shl 8) or (buffer[23].toInt() and 0xFF)
-                        if (destPort == 53) {
-                            val udpHeaderLen = 8
-                            val ipHeaderLen = (buffer[0].toInt() and 0x0F) * 4
-                            val dnsDataOffset = ipHeaderLen + udpHeaderLen
-                            val dnsDataLen = read - dnsDataOffset
+                    val versionAndIhl = buffer[0].toInt() and 0xFF
+                    val ipHeaderLen = (versionAndIhl and 0x0F) * 4
+                    val protocol = buffer[9].toInt() and 0xFF
 
-                            if (dnsDataLen > 0) {
-                                val packetCopy = ByteArray(read)
-                                System.arraycopy(buffer, 0, packetCopy, 0, read)
-                                dnsExecutor?.execute {
-                                    try {
-                                        val dnsQuery = ByteArray(dnsDataLen)
-                                        System.arraycopy(packetCopy, dnsDataOffset, dnsQuery, 0, dnsDataLen)
+                    if (read >= ipHeaderLen + 8 && protocol == 17) { // UDP packet
+                        val destPort = ((buffer[ipHeaderLen + 2].toInt() and 0xFF) shl 8) or (buffer[ipHeaderLen + 3].toInt() and 0xFF)
+                        val udpHeaderLen = 8
+                        val udpDataOffset = ipHeaderLen + udpHeaderLen
+                        val udpDataLen = read - udpDataOffset
 
-                                        val datagramSocket = java.net.DatagramSocket()
-                                        protect(datagramSocket)
-                                        datagramSocket.soTimeout = 3000
+                        if (udpDataLen > 0) {
+                            val packetCopy = ByteArray(read)
+                            System.arraycopy(buffer, 0, packetCopy, 0, read)
+                            netExecutor?.execute {
+                                try {
+                                    val udpPayload = ByteArray(udpDataLen)
+                                    System.arraycopy(packetCopy, udpDataOffset, udpPayload, 0, udpDataLen)
 
-                                        val customDns = tunnelEngine?.config?.dnsServer?.takeIf { it.isNotBlank() } ?: "1.1.1.1"
-                                        val dnsServerAddr = java.net.InetAddress.getByName(customDns)
-                                        val packet = java.net.DatagramPacket(dnsQuery, dnsQuery.size, dnsServerAddr, 53)
-                                        datagramSocket.send(packet)
+                                    val destIpBytes = ByteArray(4)
+                                    System.arraycopy(packetCopy, 16, destIpBytes, 0, 4)
 
-                                        val recvBuf = ByteArray(4096)
-                                        val recvPacket = java.net.DatagramPacket(recvBuf, recvBuf.size)
-                                        datagramSocket.receive(recvPacket)
-                                        datagramSocket.close()
+                                    val customDns = tunnelEngine?.config?.dnsServer?.takeIf { it.isNotBlank() } ?: "1.1.1.1"
+                                    val targetAddr = if (destPort == 53) java.net.InetAddress.getByName(customDns) else java.net.InetAddress.getByAddress(destIpBytes)
+                                    val targetPort = if (destPort == 53) 53 else destPort
 
-                                        // Construct response IP/UDP packet back to TUN
-                                        val respDnsLen = recvPacket.length
-                                        val respPacket = ByteArray(ipHeaderLen + udpHeaderLen + respDnsLen)
+                                    val datagramSocket = java.net.DatagramSocket()
+                                    protect(datagramSocket)
+                                    datagramSocket.soTimeout = 3000
 
-                                        // Swap IP src and dst
-                                        System.arraycopy(packetCopy, 0, respPacket, 0, ipHeaderLen)
-                                        System.arraycopy(packetCopy, 12, respPacket, 16, 4) // dst -> src
-                                        System.arraycopy(packetCopy, 16, respPacket, 12, 4) // src -> dst
+                                    val packet = java.net.DatagramPacket(udpPayload, udpPayload.size, targetAddr, targetPort)
+                                    datagramSocket.send(packet)
 
-                                        // UDP ports swap
-                                        respPacket[ipHeaderLen] = packetCopy[22]
-                                        respPacket[ipHeaderLen + 1] = packetCopy[23]
-                                        respPacket[ipHeaderLen + 2] = packetCopy[20]
-                                        respPacket[ipHeaderLen + 3] = packetCopy[21]
+                                    val recvBuf = ByteArray(4096)
+                                    val recvPacket = java.net.DatagramPacket(recvBuf, recvBuf.size)
+                                    datagramSocket.receive(recvPacket)
+                                    datagramSocket.close()
 
-                                        val udpLen = udpHeaderLen + respDnsLen
-                                        respPacket[ipHeaderLen + 4] = (udpLen shr 8).toByte()
-                                        respPacket[ipHeaderLen + 5] = (udpLen and 0xFF).toByte()
-                                        respPacket[ipHeaderLen + 6] = 0
-                                        respPacket[ipHeaderLen + 7] = 0
+                                    val respDnsLen = recvPacket.length
+                                    val respPacket = ByteArray(ipHeaderLen + udpHeaderLen + respDnsLen)
 
-                                        System.arraycopy(recvPacket.data, 0, respPacket, ipHeaderLen + udpHeaderLen, respDnsLen)
+                                    System.arraycopy(packetCopy, 0, respPacket, 0, ipHeaderLen)
+                                    System.arraycopy(packetCopy, 12, respPacket, 16, 4)
+                                    System.arraycopy(packetCopy, 16, respPacket, 12, 4)
 
-                                        synchronized(outputStream) {
-                                            outputStream.write(respPacket)
-                                            outputStream.flush()
+                                    respPacket[ipHeaderLen] = packetCopy[ipHeaderLen + 2]
+                                    respPacket[ipHeaderLen + 1] = packetCopy[ipHeaderLen + 3]
+                                    respPacket[ipHeaderLen + 2] = packetCopy[ipHeaderLen]
+                                    respPacket[ipHeaderLen + 3] = packetCopy[ipHeaderLen + 1]
+
+                                    val udpLen = udpHeaderLen + respDnsLen
+                                    respPacket[ipHeaderLen + 4] = (udpLen shr 8).toByte()
+                                    respPacket[ipHeaderLen + 5] = (udpLen and 0xFF).toByte()
+                                    respPacket[ipHeaderLen + 6] = 0
+                                    respPacket[ipHeaderLen + 7] = 0
+
+                                    System.arraycopy(recvPacket.data, 0, respPacket, ipHeaderLen + udpHeaderLen, respDnsLen)
+
+                                    synchronized(outputStream) {
+                                        outputStream.write(respPacket)
+                                        outputStream.flush()
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    } else if (read >= ipHeaderLen + 20 && protocol == 6) { // TCP packet
+                        val srcPort = ((buffer[ipHeaderLen].toInt() and 0xFF) shl 8) or (buffer[ipHeaderLen + 1].toInt() and 0xFF)
+                        val destPort = ((buffer[ipHeaderLen + 2].toInt() and 0xFF) shl 8) or (buffer[ipHeaderLen + 3].toInt() and 0xFF)
+                        val tcpHeaderLen = ((buffer[ipHeaderLen + 12].toInt() and 0xF0) ushr 4) * 4
+                        val flags = buffer[ipHeaderLen + 13].toInt() and 0xFF
+
+                        val srcIpBytes = ByteArray(4)
+                        System.arraycopy(buffer, 12, srcIpBytes, 0, 4)
+                        val dstIpBytes = ByteArray(4)
+                        System.arraycopy(buffer, 16, dstIpBytes, 0, 4)
+
+                        val payloadOffset = ipHeaderLen + tcpHeaderLen
+                        val payloadLen = read - payloadOffset
+
+                        val sessionKey = "$srcPort->$destPort"
+                        val isSyn = (flags and 0x02) != 0
+                        val isFin = (flags and 0x01) != 0
+                        val isRst = (flags and 0x04) != 0
+
+                        val clientIsn = ((buffer[ipHeaderLen + 4].toLong() and 0xFF) shl 24) or
+                                ((buffer[ipHeaderLen + 5].toLong() and 0xFF) shl 16) or
+                                ((buffer[ipHeaderLen + 6].toLong() and 0xFF) shl 8) or
+                                (buffer[ipHeaderLen + 7].toLong() and 0xFF)
+
+                        if (isSyn) {
+                            netExecutor?.execute {
+                                try {
+                                    val destAddress = java.net.InetAddress.getByAddress(dstIpBytes)
+                                    val socket = java.net.Socket()
+                                    protect(socket)
+                                    socket.connect(java.net.InetSocketAddress(destAddress, destPort), 5000)
+
+                                    val session = TcpSession(socket, srcIpBytes, dstIpBytes, srcPort, destPort)
+                                    session.clientSeq = clientIsn + 1L
+                                    tcpSessions[sessionKey] = session
+
+                                    val synAck = buildTcpPacket(
+                                        srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                        srcPort = destPort, dstPort = srcPort,
+                                        seqNum = 1000L, ackNum = session.clientSeq,
+                                        flags = 0x12
+                                    )
+                                    synchronized(outputStream) {
+                                        outputStream.write(synAck)
+                                        outputStream.flush()
+                                    }
+
+                                    netExecutor?.execute {
+                                        try {
+                                            val input = socket.getInputStream()
+                                            val resBuffer = ByteArray(4096)
+                                            var serverSeq = 1001L
+                                            while (isRunning && !socket.isClosed) {
+                                                val r = input.read(resBuffer)
+                                                if (r <= 0) break
+                                                val chunk = ByteArray(r)
+                                                System.arraycopy(resBuffer, 0, chunk, 0, r)
+                                                val dataPacket = buildTcpPacket(
+                                                    srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                                    srcPort = destPort, dstPort = srcPort,
+                                                    seqNum = serverSeq, ackNum = session.clientSeq,
+                                                    flags = 0x18,
+                                                    payload = chunk
+                                                )
+                                                serverSeq += r
+                                                synchronized(outputStream) {
+                                                    outputStream.write(dataPacket)
+                                                    outputStream.flush()
+                                                }
+                                            }
+                                        } catch (_: Exception) {} finally {
+                                            tcpSessions.remove(sessionKey)
+                                            try { socket.close() } catch (_: Exception) {}
                                         }
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        } else if (isFin || isRst) {
+                            val session = tcpSessions.remove(sessionKey)
+                            try { session?.socket?.close() } catch (_: Exception) {}
+                        } else if (payloadLen > 0) {
+                            val session = tcpSessions[sessionKey]
+                            if (session != null) {
+                                val payload = ByteArray(payloadLen)
+                                System.arraycopy(buffer, payloadOffset, payload, 0, payloadLen)
+                                session.clientSeq = clientIsn + payloadLen
+                                netExecutor?.execute {
+                                    try {
+                                        session.socket.getOutputStream().write(payload)
+                                        session.socket.getOutputStream().flush()
                                     } catch (_: Exception) {}
                                 }
                             }
@@ -245,15 +353,133 @@ class HttpKuVpnService : VpnService() {
         }
     }
 
+    private fun buildTcpPacket(
+        srcIp: ByteArray, dstIp: ByteArray,
+        srcPort: Int, dstPort: Int,
+        seqNum: Long, ackNum: Long,
+        flags: Int, payload: ByteArray? = null
+    ): ByteArray {
+        val payloadLen = payload?.size ?: 0
+        val ipHeaderLen = 20
+        val tcpHeaderLen = 20
+        val totalLen = ipHeaderLen + tcpHeaderLen + payloadLen
+        val packet = ByteArray(totalLen)
+
+        packet[0] = 0x45.toByte()
+        packet[1] = 0.toByte()
+        packet[2] = (totalLen ushr 8).toByte()
+        packet[3] = (totalLen and 0xFF).toByte()
+        packet[4] = 0.toByte()
+        packet[5] = 0.toByte()
+        packet[6] = 0x40.toByte()
+        packet[7] = 0.toByte()
+        packet[8] = 64.toByte()
+        packet[9] = 6.toByte()
+
+        System.arraycopy(srcIp, 0, packet, 12, 4)
+        System.arraycopy(dstIp, 0, packet, 16, 4)
+
+        val ipChecksum = calcIpChecksum(packet, 0, ipHeaderLen)
+        packet[10] = (ipChecksum ushr 8).toByte()
+        packet[11] = (ipChecksum and 0xFF).toByte()
+
+        packet[ipHeaderLen] = (srcPort ushr 8).toByte()
+        packet[ipHeaderLen + 1] = (srcPort and 0xFF).toByte()
+        packet[ipHeaderLen + 2] = (dstPort ushr 8).toByte()
+        packet[ipHeaderLen + 3] = (dstPort and 0xFF).toByte()
+
+        packet[ipHeaderLen + 4] = (seqNum ushr 24).toByte()
+        packet[ipHeaderLen + 5] = (seqNum ushr 16).toByte()
+        packet[ipHeaderLen + 6] = (seqNum ushr 8).toByte()
+        packet[ipHeaderLen + 7] = (seqNum and 0xFF).toByte()
+
+        packet[ipHeaderLen + 8] = (ackNum ushr 24).toByte()
+        packet[ipHeaderLen + 9] = (ackNum ushr 16).toByte()
+        packet[ipHeaderLen + 10] = (ackNum ushr 8).toByte()
+        packet[ipHeaderLen + 11] = (ackNum and 0xFF).toByte()
+
+        packet[ipHeaderLen + 12] = 0x50.toByte()
+        packet[ipHeaderLen + 13] = flags.toByte()
+        packet[ipHeaderLen + 14] = 0x40.toByte()
+        packet[ipHeaderLen + 15] = 0x00.toByte()
+
+        if (payload != null && payloadLen > 0) {
+            System.arraycopy(payload, 0, packet, ipHeaderLen + tcpHeaderLen, payloadLen)
+        }
+
+        val tcpChecksum = calcTcpChecksum(srcIp, dstIp, packet, ipHeaderLen, tcpHeaderLen + payloadLen)
+        packet[ipHeaderLen + 16] = (tcpChecksum ushr 8).toByte()
+        packet[ipHeaderLen + 17] = (tcpChecksum and 0xFF).toByte()
+
+        return packet
+    }
+
+    private fun calcTcpChecksum(
+        srcIp: ByteArray,
+        dstIp: ByteArray,
+        tcpPacket: ByteArray,
+        tcpOffset: Int,
+        tcpLength: Int
+    ): Int {
+        var sum = 0L
+
+        for (i in 0..3 step 2) {
+            sum += ((srcIp[i].toInt() and 0xFF) shl 8) or (srcIp[i + 1].toInt() and 0xFF)
+        }
+        for (i in 0..3 step 2) {
+            sum += ((dstIp[i].toInt() and 0xFF) shl 8) or (dstIp[i + 1].toInt() and 0xFF)
+        }
+        sum += 6
+        sum += tcpLength
+
+        var i = 0
+        while (i < tcpLength - 1) {
+            if (i != 16) {
+                val word = ((tcpPacket[tcpOffset + i].toInt() and 0xFF) shl 8) or (tcpPacket[tcpOffset + i + 1].toInt() and 0xFF)
+                sum += word
+            }
+            i += 2
+        }
+        if (i < tcpLength) {
+            sum += (tcpPacket[tcpOffset + i].toInt() and 0xFF) shl 8
+        }
+
+        while (sum ushr 16 > 0) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        return (sum.inv() and 0xFFFF).toInt()
+    }
+
+    private fun calcIpChecksum(packet: ByteArray, offset: Int, length: Int): Int {
+        var sum = 0L
+        var i = offset
+        while (i < offset + length - 1) {
+            val word = ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
+            sum += word
+            i += 2
+        }
+        if (i < offset + length) {
+            sum += (packet[i].toInt() and 0xFF) shl 8
+        }
+        while (sum ushr 16 > 0) {
+            sum = (sum and 0xFFFF) + (sum ushr 16)
+        }
+        return (sum.inv() and 0xFFFF).toInt()
+    }
+
     private fun stopVpn() {
         isRunning = false
         timerHandler?.removeCallbacksAndMessages(null)
         timerHandler = null
         timerRunnable = null
+        for (session in tcpSessions.values) {
+            try { session.socket.close() } catch (_: Exception) {}
+        }
+        tcpSessions.clear()
         try {
-            dnsExecutor?.shutdownNow()
+            netExecutor?.shutdownNow()
         } catch (_: Exception) {}
-        dnsExecutor = null
+        netExecutor = null
         vpnThread?.interrupt()
         vpnThread = null
         try {
@@ -281,7 +507,7 @@ class HttpKuVpnService : VpnService() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "HttpKu VPN Service",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_HIGH
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
@@ -306,13 +532,20 @@ class HttpKuVpnService : VpnService() {
 
         val serverAddr = tunnelEngine?.config?.remoteAddr.takeIf { !it.isNullOrBlank() }
             ?: tunnelEngine?.config?.httpAddr.takeIf { !it.isNullOrBlank() }
-            ?: "Server running"
+            ?: "Server"
+
+        val title = when (tunnelEngine?.status) {
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "HttpKu - Terhubung"
+            com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "HttpKu - Menunggu Jaringan"
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "HttpKu - Menghubungkan"
+            else -> "HttpKu - Terhubung"
+        }
 
         val statusText = when (tunnelEngine?.status) {
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "Server: $serverAddr | Time: $uptimeStr"
-            com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "Waiting for network connection..."
-            com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "Connecting to server..."
-            else -> "HttpKu Tunnel Active | Time: $uptimeStr"
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTED -> "Aplikasi terhubung ke $serverAddr | Durasi: $uptimeStr"
+            com.sslh.sshl.app.model.TunnelStatus.WAITING_FOR_NETWORK -> "Menunggu koneksi internet..."
+            com.sslh.sshl.app.model.TunnelStatus.CONNECTING -> "Menghubungkan ke server $serverAddr..."
+            else -> "Aplikasi terhubung ke $serverAddr | Durasi: $uptimeStr"
         }
 
         val stopIntent = Intent(this, HttpKuVpnService::class.java).apply { action = ACTION_STOP }
@@ -322,13 +555,14 @@ class HttpKuVpnService : VpnService() {
         val restartPendingIntent = PendingIntent.getService(this, 2, restartIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("HttpKu Tunnel")
+            .setContentTitle(title)
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .addAction(android.R.drawable.ic_menu_rotate, "CONNECT ULANG", restartPendingIntent)
             .addAction(android.R.drawable.ic_media_pause, "STOP", stopPendingIntent)
-            .addAction(android.R.drawable.ic_menu_rotate, "RESTART", restartPendingIntent)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this,
