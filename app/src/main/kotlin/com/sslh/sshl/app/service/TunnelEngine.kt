@@ -27,6 +27,7 @@ import kotlin.concurrent.thread
 
 class TunnelEngine {
     companion object {
+        val instance: TunnelEngine by lazy { TunnelEngine() }
         private const val MAX_LOG_SIZE = 500
         const val SOCKS_PORT = 1080
         const val HTTP_PROXY_PORT = 7900
@@ -233,6 +234,14 @@ class TunnelEngine {
 
     private fun connectTunnelInternal() {
         if (config.remoteAddr.isNotBlank()) {
+            JSch.setLogger(object : com.jcraft.jsch.Logger {
+                override fun isEnabled(level: Int): Boolean = true
+                override fun log(level: Int, message: String) {
+                    val isErr = level == com.jcraft.jsch.Logger.ERROR || level == com.jcraft.jsch.Logger.FATAL
+                    addLog("[SSH Engine] $message", isError = isErr)
+                }
+            })
+
             val jsch = JSch()
             val user = if (config.remoteUsername.isEmpty()) "root" else config.remoteUsername
             val session = jsch.getSession(user, config.remoteAddr, config.remotePort)

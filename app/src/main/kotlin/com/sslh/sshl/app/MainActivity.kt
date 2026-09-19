@@ -33,7 +33,7 @@ import com.sslh.sshl.app.service.TunnelEngine
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val tunnelEngine = TunnelEngine()
+    private val tunnelEngine = TunnelEngine.instance
     private val PREFS_NAME = "httpku_prefs"
     private val KEY_CONFIG = "tunnel_config"
     private val KEY_DARK_MODE = "is_dark_mode"
@@ -276,12 +276,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpnAndEngine() {
-        HttpKuVpnService.tunnelEngine = tunnelEngine
         val intent = Intent(this, HttpKuVpnService::class.java).apply {
             action = HttpKuVpnService.ACTION_START
         }
         androidx.core.content.ContextCompat.startForegroundService(this, intent)
         tunnelEngine.startTunnel()
+        showLogsDialog()
     }
 
     private fun stopVpnAndEngine() {
