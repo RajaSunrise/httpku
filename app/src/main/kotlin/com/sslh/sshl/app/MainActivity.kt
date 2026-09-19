@@ -11,9 +11,11 @@ import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.Spinner
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -179,6 +181,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnGenerator2.setOnClickListener { showPayloadGeneratorDialog() }
         binding.btnViewLogs.setOnClickListener { showLogsDialog() }
 
+        binding.btnImportConfig.setOnClickListener { showImportConfigDialog() }
+        binding.btnExportConfig.setOnClickListener { showExportConfigDialog() }
+        binding.btnPingTest.setOnClickListener { runPingTest() }
+
         binding.btnStartStop.setOnClickListener {
             if (tunnelEngine.isConnected || tunnelEngine.isConnecting) {
                 stopVpnAndEngine()
@@ -188,6 +194,76 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateUIFromEngine()
+    }
+
+    private fun showImportConfigDialog() {
+        val etInput = EditText(this)
+        etInput.hint = "Paste Config JSON here"
+        AlertDialog.Builder(this)
+            .setTitle("Import Config")
+            .setView(etInput)
+            .setPositiveButton("Import") { dialog, _ ->
+                val json = etInput.text.toString()
+                if (tunnelEngine.importConfigJson(json)) {
+                    saveConfig()
+                    setupUIFieldsFromConfig()
+                    Toast.makeText(this, "Config imported successfully", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Failed to import config", Toast.LENGTH_SHORT).show()
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showExportConfigDialog() {
+        val json = tunnelEngine.exportConfigJson()
+        val etOutput = EditText(this)
+        etOutput.setText(json)
+        AlertDialog.Builder(this)
+            .setTitle("Export Config JSON")
+            .setView(etOutput)
+            .setPositiveButton("Copy") { dialog, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("HttpKu Config", json)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(this, "Config copied to clipboard", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun runPingTest() {
+        Toast.makeText(this, "Pinging server...", Toast.LENGTH_SHORT).show()
+        tunnelEngine.measurePing(binding.etRemoteAddr.text.toString(), binding.etRemotePort.text.toString().toIntOrNull() ?: 80) { ms ->
+            runOnUiThread {
+                if (ms != null) {
+                    Toast.makeText(this, "Ping result: ${ms}ms", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Ping failed", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun setupUIFieldsFromConfig() {
+        val config = tunnelEngine.config
+        binding.etRemoteAddr.setText(config.remoteAddr)
+        binding.etRemotePort.setText(config.remotePort.toString())
+        binding.etRemoteUsername.setText(config.remoteUsername)
+        binding.etRemotePassword.setText(config.remotePassword)
+        binding.etHttpAddr.setText(config.httpAddr)
+        binding.etHttpPort.setText(config.httpPort.toString())
+        binding.etDnsServer.setText(config.dnsServer)
+        binding.etCustomResponse.setText(config.customHttpResponse)
+        binding.etPayload.setText(config.payload)
+        binding.switchProxyAuth.isChecked = config.proxyAuthorization
+        binding.switchReplaceResponse.isChecked = config.replaceHttpResponse
+        binding.switchCustomPayload.isChecked = config.customPayload
+        binding.switchDetectIp.isChecked = config.detectIpv4
+        setTunnelTypeRadio(config.type)
     }
 
     private fun prepareAndStartVpn() {
@@ -335,6 +411,11 @@ class MainActivity : AppCompatActivity() {
         val cbUserAgent = dialogView.findViewById<CheckBox>(R.id.cbUserAgent)
         val cbReferer = dialogView.findViewById<CheckBox>(R.id.cbReferer)
         val cbForwardedHost = dialogView.findViewById<CheckBox>(R.id.cbForwardedHost)
+        val cbFrontQuery = dialogView.findViewById<CheckBox>(R.id.cbFrontQuery)
+        val cbBackQuery = dialogView.findViewById<CheckBox>(R.id.cbBackQuery)
+        val cbOnlineHost = dialogView.findViewById<CheckBox>(R.id.cbOnlineHost)
+        val cbReverseProxy = dialogView.findViewById<CheckBox>(R.id.cbReverseProxy)
+        val cbDualConnect = dialogView.findViewById<CheckBox>(R.id.cbDualConnect)
         val btnCancel = dialogView.findViewById<Button>(R.id.btnCancelPayload)
         val btnApply = dialogView.findViewById<Button>(R.id.btnApplyPayload)
 
@@ -359,7 +440,12 @@ class MainActivity : AppCompatActivity() {
                 keepAlive = cbKeepAlive.isChecked,
                 userAgent = cbUserAgent.isChecked,
                 referer = cbReferer.isChecked,
-                forwardedHost = cbForwardedHost.isChecked
+                forwardedHost = cbForwardedHost.isChecked,
+                frontQuery = cbFrontQuery.isChecked,
+                backQuery = cbBackQuery.isChecked,
+                onlineHost = cbOnlineHost.isChecked,
+                reverseProxy = cbReverseProxy.isChecked,
+                dualConnect = cbDualConnect.isChecked
             )
             val generated = PayloadGenerator.generatePayload(options)
             binding.etPayload.setText(generated)

@@ -48,6 +48,30 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
+        <ImageButton
+            android:id="@+id/btnImportConfig"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Import"
+            android:src="@android:drawable/ic_menu_add" />
+
+        <ImageButton
+            android:id="@+id/btnExportConfig"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Export"
+            android:src="@android:drawable/ic_menu_share" />
+
+        <ImageButton
+            android:id="@+id/btnPingTest"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Ping Test"
+            android:src="@android:drawable/ic_menu_compass" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

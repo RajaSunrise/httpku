@@ -11,7 +11,10 @@ data class PayloadGeneratorOptions(
     val referer: Boolean = false,
     val forwardedHost: Boolean = false,
     val backQuery: Boolean = false,
-    val frontQuery: Boolean = false
+    val frontQuery: Boolean = false,
+    val onlineHost: Boolean = false,
+    val reverseProxy: Boolean = false,
+    val dualConnect: Boolean = false
 )
 
 object PayloadGenerator {
@@ -30,6 +33,7 @@ object PayloadGenerator {
         parsed = parsed.replace("[cr]", "\r")
         parsed = parsed.replace("[lf]", "\n")
         parsed = parsed.replace("[lfcr]", "\n\r")
+        parsed = parsed.replace("[crlf*2]", "\r\n\r\n")
         parsed = parsed.replace("[protocol]", "HTTP/1.1")
         parsed = parsed.replace("[host]", host)
         parsed = parsed.replace("[port]", port.toString())
@@ -41,6 +45,7 @@ object PayloadGenerator {
         parsed = parsed.replace("[raw]", "CONNECT $hostPort HTTP/1.1\r\nHost: $hostPort\r\n")
         parsed = parsed.replace("[real_raw]", "CONNECT $hostPort HTTP/1.1\r\n")
         parsed = parsed.replace("[status]", statusLine)
+        parsed = parsed.replace("[instant]", "")
 
         return parsed
     }
@@ -49,7 +54,14 @@ object PayloadGenerator {
         var host = options.url.trim()
         if (host.isEmpty()) host = "id1.jagoanip.my.id"
 
+        val queryParam = if (options.frontQuery) "http://$host/" else if (options.backQuery) "?$host" else ""
+        val targetPath = if (options.frontQuery) "http://$host/" else "/$queryParam"
+
         val sb = StringBuilder()
+
+        if (options.dualConnect) {
+            sb.append("CONNECT [host_port] HTTP/1.1[crlf]")
+        }
 
         when (options.injectionMethod) {
             "Front Inject" -> {
@@ -63,9 +75,17 @@ object PayloadGenerator {
             }
             else -> {
                 // Normal
-                sb.append("${options.method} / HTTP/1.1[crlf]")
+                sb.append("${options.method} $targetPath HTTP/1.1[crlf]")
                 sb.append("Host: $host[crlf]")
             }
+        }
+
+        if (options.onlineHost) {
+            sb.append("X-Online-Host: $host[crlf]")
+        }
+
+        if (options.reverseProxy) {
+            sb.append("X-Forward-Host: $host[crlf]")
         }
 
         if (options.upgradeWebsocket) {

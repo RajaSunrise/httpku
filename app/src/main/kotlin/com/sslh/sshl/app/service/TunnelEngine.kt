@@ -88,6 +88,42 @@ class TunnelEngine {
         }
     }
 
+    fun measurePing(targetHost: String, targetPort: Int = 80, onResult: (Long?) -> Unit) {
+        thread {
+            val hostToPing = if (targetHost.isBlank()) config.remoteAddr.ifBlank { "1.1.1.1" } else targetHost
+            val portToPing = if (targetPort <= 0) 80 else targetPort
+            try {
+                val startTime = System.currentTimeMillis()
+                val socket = Socket()
+                HttpKuVpnService.instance?.protectSocket(socket)
+                socket.connect(InetSocketAddress(hostToPing, portToPing), 5000)
+                val latency = System.currentTimeMillis() - startTime
+                socket.close()
+                addLog("Ping to $hostToPing:$portToPing = ${latency}ms", isHighlight = true)
+                onResult(latency)
+            } catch (e: Exception) {
+                addLog("Ping to $hostToPing:$portToPing failed: ${e.message}", isError = true)
+                onResult(null)
+            }
+        }
+    }
+
+    fun exportConfigJson(): String {
+        return config.toJson()
+    }
+
+    fun importConfigJson(jsonStr: String): Boolean {
+        return try {
+            val newCfg = TunnelConfig.fromJson(jsonStr)
+            updateConfig(newCfg)
+            addLog("Imported config '${newCfg.name}' successfully", isSuccess = true)
+            true
+        } catch (e: Exception) {
+            addLog("Failed to import config: ${e.message}", isError = true)
+            false
+        }
+    }
+
     fun onNetworkAvailable() {
         if (status == TunnelStatus.WAITING_FOR_NETWORK || shouldAutoReconnect) {
             shouldAutoReconnect = false
