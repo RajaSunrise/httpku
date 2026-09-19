@@ -87,6 +87,36 @@
             android:layout_height="wrap_content"
             android:text="X-Forwarded-Host" />
 
+        <CheckBox
+            android:id="@+id/cbFrontQuery"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Front Query" />
+
+        <CheckBox
+            android:id="@+id/cbBackQuery"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Back Query" />
+
+        <CheckBox
+            android:id="@+id/cbOnlineHost"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Online Host" />
+
+        <CheckBox
+            android:id="@+id/cbReverseProxy"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Reverse Proxy" />
+
+        <CheckBox
+            android:id="@+id/cbDualConnect"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Dual Connect" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
