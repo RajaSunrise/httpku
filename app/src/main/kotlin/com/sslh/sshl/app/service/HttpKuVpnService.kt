@@ -28,18 +28,22 @@ class HttpKuVpnService : VpnService() {
         private const val CHANNEL_ID = "httpku_vpn_channel"
         var instance: HttpKuVpnService? = null
             private set
-        var tunnelEngine: TunnelEngine? = null
+        val tunnelEngine: TunnelEngine get() = TunnelEngine.instance
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val engineListener = {
+        updateNotification()
+    }
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         createNotificationChannel()
         registerNetworkMonitor()
+        tunnelEngine.addListener(engineListener)
     }
 
     private fun registerNetworkMonitor() {
@@ -279,10 +283,13 @@ class HttpKuVpnService : VpnService() {
                         val dstIpBytes = ByteArray(4)
                         System.arraycopy(buffer, 16, dstIpBytes, 0, 4)
 
+                        val srcIpStr = java.net.InetAddress.getByAddress(srcIpBytes).hostAddress ?: "10.0.0.2"
+                        val dstIpStr = java.net.InetAddress.getByAddress(dstIpBytes).hostAddress ?: "0.0.0.0"
+
                         val payloadOffset = ipHeaderLen + tcpHeaderLen
                         val payloadLen = read - payloadOffset
 
-                        val sessionKey = "$srcPort->$destPort"
+                        val sessionKey = "$srcIpStr:$srcPort->$dstIpStr:$destPort"
                         val isSyn = (flags and 0x02) != 0
                         val isFin = (flags and 0x01) != 0
                         val isRst = (flags and 0x04) != 0
@@ -359,22 +366,28 @@ class HttpKuVpnService : VpnService() {
                                         try {
                                             val input = socket.getInputStream()
                                             val resBuffer = ByteArray(4096)
+                                            val maxChunk = 1360
                                             while (isRunning && !socket.isClosed) {
                                                 val r = input.read(resBuffer)
                                                 if (r <= 0) break
-                                                val chunk = ByteArray(r)
-                                                System.arraycopy(resBuffer, 0, chunk, 0, r)
-                                                val dataPacket = buildTcpPacket(
-                                                    srcIp = dstIpBytes, dstIp = srcIpBytes,
-                                                    srcPort = destPort, dstPort = srcPort,
-                                                    seqNum = session.serverSeq, ackNum = session.clientSeq,
-                                                    flags = 0x18,
-                                                    payload = chunk
-                                                )
-                                                session.serverSeq += r
-                                                synchronized(outputStream) {
-                                                    outputStream.write(dataPacket)
-                                                    outputStream.flush()
+                                                var offset = 0
+                                                while (offset < r) {
+                                                    val chunkSize = Math.min(maxChunk, r - offset)
+                                                    val chunk = ByteArray(chunkSize)
+                                                    System.arraycopy(resBuffer, offset, chunk, 0, chunkSize)
+                                                    val dataPacket = buildTcpPacket(
+                                                        srcIp = dstIpBytes, dstIp = srcIpBytes,
+                                                        srcPort = destPort, dstPort = srcPort,
+                                                        seqNum = session.serverSeq, ackNum = session.clientSeq,
+                                                        flags = 0x18,
+                                                        payload = chunk
+                                                    )
+                                                    session.serverSeq += chunkSize
+                                                    synchronized(outputStream) {
+                                                        outputStream.write(dataPacket)
+                                                        outputStream.flush()
+                                                    }
+                                                    offset += chunkSize
                                                 }
                                             }
 
@@ -597,6 +610,7 @@ class HttpKuVpnService : VpnService() {
 
     override fun onDestroy() {
         instance = null
+        tunnelEngine.removeListener(engineListener)
         unregisterNetworkMonitor()
         stopVpn()
         super.onDestroy()
